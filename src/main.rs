@@ -41,13 +41,11 @@ fn main() {
         options,
         Box::new(|cc| {
             let frame = cc.egui_ctx.clone();
-            // frame.set_debug_on_hover(true);
 
             let wgpu_render_state = cc.wgpu_render_state.as_ref().unwrap();
 
             let wave_view_state = Arc::new(WaveViewState::new(&wgpu_render_state));
 
-            // let wave_view_state = init_wave_view_wgpu(&wgpu_render_state);
             wgpu_render_state
                 .renderer
                 .write()
@@ -68,25 +66,27 @@ fn main() {
             let track_state = state.clone();
 
             // Load test sample
-            let sample =
-                Arc::new(sample::Sample::load_from_file("sample.wav", Some("S1"), &state).unwrap());
+            let sample = Arc::new(
+                sample::Sample::load_from_file("sample_short.wav", Some("Sample 1"), &state)
+                    .unwrap(),
+            );
             let track_sample = sample.clone();
 
-            let sample2 =
-                Arc::new(sample::Sample::load_from_file("sample.wav", Some("S2"), &state).unwrap());
+            let sample2 = Arc::new(
+                sample::Sample::load_from_file("sample_short.wav", Some("Sample 2"), &state)
+                    .unwrap(),
+            );
             let track_sample2 = sample2.clone();
 
-            let stream = start_audio(device, sample, state);
+            let track = Arc::new(RwLock::new(Track::new(
+                "Track",
+                vec![track_sample, track_sample2],
+                track_state,
+            )));
 
-            Box::new(Application::new(
-                cc,
-                vec![Track::new(
-                    "Track",
-                    vec![track_sample, track_sample2],
-                    track_state,
-                )],
-                vec![stream],
-            ))
+            let stream = start_audio(device, track.clone(), state);
+
+            Box::new(Application::new(cc, vec![track], vec![stream]))
         }),
     )
     .unwrap();
@@ -94,7 +94,7 @@ fn main() {
 
 fn start_audio(
     device: cpal::Device,
-    sample: Arc<sample::Sample>,
+    track: Arc<RwLock<Track>>,
     state: Arc<RwLock<State>>,
 ) -> cpal::Stream {
     let mut supported_configs_range = device
@@ -120,11 +120,36 @@ fn start_audio(
     let _coeffs =
         Coefficients::<f32>::from_params(Type::BandPass, fs, f0, Q_BUTTERWORTH_F32).unwrap();
 
-    let mut index = 0.0;
+    let mut absolute_index = 0.0;
+    let mut current_index = 0.0;
+    let mut current_id = Id::NULL;
+
     let write_data_f32 = move |sample_data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-        let mut state = state.write().unwrap();
-        state.play_time.get_or_insert(info.timestamp().playback);
-        state.current_time = Some(info.timestamp().playback);
+        let duration = {
+            let mut state = state.write().unwrap();
+            state.play_time.get_or_insert(info.timestamp().playback);
+            state.current_time = Some(info.timestamp().playback);
+
+            let Some(duration) = state.duration_played() else {
+                eprintln!("RETUNRING");
+                return;
+            };
+
+            duration
+        };
+
+        let track = track.read().unwrap();
+        let Some(sample) = track.sample_at_index(absolute_index as usize) else {
+            eprintln!("RETUNRING2");
+            return;
+        };
+
+        if current_id != sample.id {
+            current_index = 0.0;
+            current_id = sample.id;
+        }
+
+        println!("Playing Sample: {}", sample.name);
 
         let data = sample.data.as_thirty_two_float().unwrap();
 
@@ -134,27 +159,35 @@ fn start_audio(
                 // *s = data[index as usize + i] * 0.2;
                 // }
                 sd.copy_from_slice(
-                    &data[index as usize..index as usize + target_sample_count as usize],
+                    &data[current_index as usize
+                        ..current_index as usize + target_sample_count as usize],
                 );
 
-                index += (sample.header.channel_count as f64)
+                current_index += (sample.header.channel_count as f64)
+                    * (sample.header.sampling_rate as f64 / target_sample_rate.0 as f64);
+
+                absolute_index += (sample.header.channel_count as f64)
                     * (sample.header.sampling_rate as f64 / target_sample_rate.0 as f64);
             }
         } else if sample.header.channel_count == 1 {
             for sd in sample_data.chunks_mut(target_sample_count as usize) {
-                let _value = data[index as usize] * 0.2;
+                let value = data[current_index as usize] * 0.2;
                 // let value = biquad1.run(value);
-                let value = 0.0;
+                // let value = 0.0;
 
                 for s in sd {
                     *s = value;
                 }
 
-                index += (sample.header.channel_count as f64)
+                current_index += (sample.header.channel_count as f64)
+                    * (sample.header.sampling_rate as f64 / target_sample_rate.0 as f64);
+
+                absolute_index += (sample.header.channel_count as f64)
                     * (sample.header.sampling_rate as f64 / target_sample_rate.0 as f64);
             }
         }
 
+        let state = state.read().unwrap();
         state.egui_ctx.request_repaint();
     };
 
@@ -184,13 +217,13 @@ fn start_audio(
 #[derive(Default)]
 struct Application {
     _streams: Vec<cpal::Stream>,
-    tracks: Vec<Track>,
+    tracks: Vec<Arc<RwLock<Track>>>,
 }
 
 impl Application {
     fn new(
         cc: &eframe::CreationContext<'_>,
-        tracks: Vec<Track>,
+        tracks: Vec<Arc<RwLock<Track>>>,
         streams: Vec<cpal::Stream>,
     ) -> Self {
         // Set open sans regular as the default font family
@@ -234,6 +267,7 @@ impl eframe::App for Application {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
                 for track in &mut self.tracks {
+                    let mut track = track.write().unwrap();
                     track.ui(ui);
                 }
             })

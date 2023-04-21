@@ -1,4 +1,4 @@
-use std::{sync::Arc};
+use std::{sync::Arc, time::Duration};
 
 use crate::wave_view::WaveViewState;
 
@@ -12,4 +12,20 @@ pub struct State {
 
     // WGPU state
     pub wave_view_state: Arc<WaveViewState>,
+}
+
+impl State {
+    pub fn duration_played(&self) -> Option<Duration> {
+        if !self.playing {
+            return None;
+        }
+
+        if let (Some(start_time), Some(current_time)) = (&self.play_time, &self.current_time) {
+            if let Some(duration) = current_time.duration_since(start_time) {
+                return Some(duration);
+            }
+        }
+
+        None
+    }
 }

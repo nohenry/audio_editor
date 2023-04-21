@@ -93,8 +93,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let max_coord = i32(max * config.scale) + i32(config.resolution.y / 2.0);
     let min_coord = i32(min * config.scale) + i32(config.resolution.y / 2.0);
 
-    let max_rms = i32(rms * config.scale * 0.5) + i32(config.resolution.y / 2.0);
-    let min_rms = i32(rms * config.scale * -0.5) + i32(config.resolution.y / 2.0);
+    let max_rms = i32(rms * config.scale) + i32(config.resolution.y / 2.0);
+    let min_rms = i32(rms * -config.scale) + i32(config.resolution.y / 2.0);
 
     if y < max_rms && y > min_rms {
         return config.second_color;

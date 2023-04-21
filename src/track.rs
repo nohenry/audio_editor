@@ -1,6 +1,7 @@
 use std::{
     ops::Range,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use egui::Pos2;
@@ -29,6 +30,34 @@ impl Track {
             app_state,
             view_range: 0..5000000,
         }
+    }
+
+    pub fn sample_at_time(&self, duration: &Duration) -> Option<&Arc<Sample>> {
+        let mut offset = 0;
+        self.samples.iter().find(|&x| {
+            if duration.as_millis() > offset
+                && duration.as_millis() < offset + x.len_time().as_millis()
+            {
+                return true;
+            } else {
+                offset += x.len_time().as_millis();
+                return false;
+            }
+        })
+    }
+
+    pub fn sample_at_index(&self, index: usize) -> Option<&Arc<Sample>> {
+        let mut offset = 0;
+        println!("{}", index);
+        self.samples.iter().find(|&x| {
+            println!("off: {}", offset);
+            if index >= offset && index < offset + x.len() {
+                true
+            } else {
+                offset += x.len();
+                false
+            }
+        })
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
@@ -202,6 +231,8 @@ impl Track {
                                         se: 5.0,
                                         sw: 5.0,
                                     })
+                                    // .stroke(egui::Stroke::new(1.5, egui::Color32::from_gray(10)))
+                                    // .shadow(egui::epaint::Shadow::small_dark())
                                     .show(ui, |ui| {
                                         let mut new_rect = ui.max_rect();
                                         new_rect
@@ -222,25 +253,16 @@ impl Track {
                             // Display playback cursor
                             let state = self.app_state.read().unwrap();
                             if state.playing {
-                                if let (Some(start_time), Some(current_time)) =
-                                    (&state.play_time, &state.current_time)
-                                {
-                                    if let Some(duration) = current_time.duration_since(start_time)
-                                    {
-                                        let millis = duration.as_millis() as f32;
-                                        if (millis as f64) > time_offset * 1000.0 {
-                                            let x = (millis * pixels_per_millis + rect.left())
-                                                .round()
-                                                + 0.5;
+                                if let Some(duration) = state.duration_played() {
+                                    let millis = duration.as_millis() as f32;
+                                    if (millis as f64) > time_offset * 1000.0 {
+                                        let x = (millis * pixels_per_millis + rect.left()).round()
+                                            + 0.5;
 
-                                            ui.painter().line_segment(
-                                                [
-                                                    Pos2::new(x, rect.bottom()),
-                                                    Pos2::new(x, rect.top()),
-                                                ],
-                                                egui::Stroke::new(1.0, egui::Color32::GREEN),
-                                            );
-                                        }
+                                        ui.painter().line_segment(
+                                            [Pos2::new(x, rect.bottom()), Pos2::new(x, rect.top())],
+                                            egui::Stroke::new(1.0, egui::Color32::GREEN),
+                                        );
                                     }
                                 }
                             }
@@ -255,7 +277,7 @@ impl Track {
                                 );
                             }
 
-                            time_offset += sample.len() as f64 / sample.header.sampling_rate as f64;
+                            time_offset += sample.len_time().as_secs_f64();
                         }
                     });
                 })

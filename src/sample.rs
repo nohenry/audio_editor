@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock}, time::Duration,
 };
 
 use bytemuck::Zeroable;
@@ -155,6 +155,11 @@ impl Sample {
             wav::BitDepth::ThirtyTwoFloat(data) => data.len(),
             _ => 0,
         }
+    }
+
+    pub fn len_time(&self) -> Duration {
+        let secs = self.len() as f64 / self.header.sampling_rate as f64;
+        Duration::from_secs_f64(secs)
     }
 
     pub fn display(

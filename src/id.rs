@@ -16,6 +16,14 @@ pub fn get_id_mgr() -> MutexGuard<'static, IDManager> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(u64);
 
+impl Id {
+    pub const NULL: Id = Id(0);
+
+    pub fn is_null(&self) -> bool {
+        self.0 == 0
+    }
+}
+
 #[derive(Debug)]
 pub struct IDManager {
     id_mappings: Vec<Id>,
@@ -23,6 +31,7 @@ pub struct IDManager {
 }
 
 impl IDManager {
+
     pub fn gen_id(&mut self) -> Id {
         self.next_id.0 += 1;
         Id(self.next_id.0 - 1)
