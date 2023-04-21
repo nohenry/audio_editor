@@ -1,25 +1,25 @@
 use std::{
-    cell::RefCell,
-    f32::consts::PI,
-    io::Write,
-    rc::Rc,
-    sync::Arc,
-    time::{Duration, Instant},
+    collections::HashMap,
+    sync::{Arc, RwLock},
 };
 
-use biquad::{ToHertz, Coefficients, Type, Q_BUTTERWORTH_F32, DirectForm1, Biquad};
+use biquad::{Coefficients, ToHertz, Type, Q_BUTTERWORTH_F32};
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    FromSample, Sample, SampleFormat, StreamInstant,
+    SampleFormat,
 };
-use egui::{mutex::RwLock, Pos2, Widget};
-use track::{init_wave_view_wgpu, Track};
+use id::Id;
+use sample::WaveViewSampleState;
+use track::Track;
+use wave_view::WaveViewState;
 
 use crate::state::State;
 
+mod id;
 mod sample;
 mod state;
 mod track;
+mod wave_view;
 
 fn main() {
     // Log to stdout (if you run with `RUST_LOG=debug`).
@@ -40,18 +40,19 @@ fn main() {
         "Audio Editor",
         options,
         Box::new(|cc| {
-            
             let frame = cc.egui_ctx.clone();
             // frame.set_debug_on_hover(true);
 
             let wgpu_render_state = cc.wgpu_render_state.as_ref().unwrap();
 
-            let wave_view_state = init_wave_view_wgpu(&wgpu_render_state);
+            let wave_view_state = Arc::new(WaveViewState::new(&wgpu_render_state));
+
+            // let wave_view_state = init_wave_view_wgpu(&wgpu_render_state);
             wgpu_render_state
                 .renderer
                 .write()
                 .paint_callback_resources
-                .insert(wave_view_state);
+                .insert(HashMap::<Id, Arc<WaveViewSampleState>>::new());
 
             // Create application state
             let state = Arc::new(RwLock::new(State {
@@ -61,18 +62,29 @@ fn main() {
 
                 egui_ctx: frame,
                 wgpu_ctx: wgpu_render_state.clone(),
+
+                wave_view_state,
             }));
             let track_state = state.clone();
 
             // Load test sample
-            let sample = Arc::new(sample::Sample::load_from_file("sample.wav").unwrap());
+            let sample =
+                Arc::new(sample::Sample::load_from_file("sample.wav", Some("S1"), &state).unwrap());
             let track_sample = sample.clone();
+
+            let sample2 =
+                Arc::new(sample::Sample::load_from_file("sample.wav", Some("S2"), &state).unwrap());
+            let track_sample2 = sample2.clone();
 
             let stream = start_audio(device, sample, state);
 
             Box::new(Application::new(
                 cc,
-                vec![Track::new("Track", track_sample, track_state)],
+                vec![Track::new(
+                    "Track",
+                    vec![track_sample, track_sample2],
+                    track_state,
+                )],
                 vec![stream],
             ))
         }),
@@ -105,12 +117,12 @@ fn start_audio(
     let fs = 1.khz();
 
     // Create coefficients for the biquads
-    let coeffs = Coefficients::<f32>::from_params(Type::BandPass, fs, f0, Q_BUTTERWORTH_F32).unwrap();
-    let mut biquad1 = DirectForm1::<f32>::new(coeffs);
+    let _coeffs =
+        Coefficients::<f32>::from_params(Type::BandPass, fs, f0, Q_BUTTERWORTH_F32).unwrap();
 
     let mut index = 0.0;
     let write_data_f32 = move |sample_data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-        let mut state = state.write();
+        let mut state = state.write().unwrap();
         state.play_time.get_or_insert(info.timestamp().playback);
         state.current_time = Some(info.timestamp().playback);
 
@@ -130,7 +142,7 @@ fn start_audio(
             }
         } else if sample.header.channel_count == 1 {
             for sd in sample_data.chunks_mut(target_sample_count as usize) {
-                let value = data[index as usize] * 0.2;
+                let _value = data[index as usize] * 0.2;
                 // let value = biquad1.run(value);
                 let value = 0.0;
 
@@ -169,26 +181,9 @@ fn start_audio(
     stream
 }
 
-// static inst: LazyCell<Duration> = LazyCell::new(|| Instant::now().elapsed());
-
-// fn write_silence<T: Sample>(data: &mut [T], info: &cpal::OutputCallbackInfo) {
-//     println!("info: {:?}", info);
-//     for sample in data.iter_mut() {
-//         static inst: Lazy<Duration> = Lazy::new(|| Instant::now().elapsed());
-//         // *sample = Sample::EQUILIBRIUM;
-//         let tp = info
-//             .timestamp()
-//             .callback
-//             .duration_since(&.unwrap()).unwrap();
-//         println!("{:?}", tp);
-
-//         // inst +=
-//     }
-// }
-
 #[derive(Default)]
 struct Application {
-    streams: Vec<cpal::Stream>,
+    _streams: Vec<cpal::Stream>,
     tracks: Vec<Track>,
 }
 
@@ -221,12 +216,15 @@ impl Application {
         visuals.override_text_color = Some(egui::Color32::from_rgb(255, 255, 255));
         cc.egui_ctx.set_visuals(visuals);
 
-        Application { tracks, streams }
+        Application {
+            tracks,
+            _streams: streams,
+        }
     }
 }
 
 impl eframe::App for Application {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("editor-main-heading").show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("Audio Editor");
@@ -238,9 +236,6 @@ impl eframe::App for Application {
                 for track in &mut self.tracks {
                     track.ui(ui);
                 }
-                // ui.add(Track {
-                //     name: "Track".to_string(),
-                // });
             })
         });
     }

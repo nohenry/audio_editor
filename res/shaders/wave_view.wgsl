@@ -9,7 +9,7 @@ struct VertexOutput {
 }
 
 struct Uniform {
-    width: f32,
+    resolution: vec2<f32>,
     samples_per_pixel: f32,
     scale: f32,
     data_len: u32,
@@ -43,67 +43,66 @@ const sample_point_threshold = 0.333333333;
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
-    let pixel = u32(in.uv.x * config.width);
-    let y = i32(in.uv.y * 200.0);
+    let pixel = u32(in.uv.x * config.resolution.x);
+    let y = i32(in.uv.y * config.resolution.y);
 
-    if pixel != 0u {
-        // if config.samples_per_pixel <= sample_point_threshold {
-        //     let xl = f32(pixel - 1u) * config.samples_per_pixel;
-        //     let index = f32(pixel) * config.samples_per_pixel;
 
-        //     let r = config.width / f32(config.data_len);
-        //     let p = u32(index * r);
+    // if config.samples_per_pixel <= sample_point_threshold {
+    //     let xl = f32(pixel - 1u) * config.samples_per_pixel;
+    //     let index = f32(pixel) * config.samples_per_pixel;
 
-        //     let coord = audio_buf[u32(index)] * 100.0 + 100.0;
-           
-        //     var point = pixel;
-        //     for (var i = pixel; i < config.data_len + pixel; i += 1u) {
-        //         let xl = f32(i) * config.samples_per_pixel;
-        //         let index = f32(i + 1u) * config.samples_per_pixel;
-        //         let c1 = audio_buf[u32(xl)] * 100.0 + 100.0;
-        //         let c2 = audio_buf[u32(index)] * 100.0 + 100.0;
-        //         if u32(xl) != u32(index) && c1 == coord {
-        //             point = i;
-        //             break;
-        //         }
-        //     }
-        // } else {
-            
-        // Calculate max, min and rms values
-        var max = -1000000.0;
-        var min= 1000000.0;
-        var sq_sum = 0.0;
+    //     let r = config.width / f32(config.data_len);
+    //     let p = u32(index * r);
 
-        let offset = u32(f32(pixel) * config.samples_per_pixel);
-        // let increment = u32(round(1.0 / (f32(config.data_len) / config.samples_per_pixel / config.width)));
-        for (var p = 0u; p < u32(config.samples_per_pixel); p += config.increment) {
-            let value = audio_buf[offset + p];
-            if value > max {
-                max = value;
-            } else if value < min {
-                min = value;
-            }
+    //     let coord = audio_buf[u32(index)] * 100.0 + 100.0;
+        
+    //     var point = pixel;
+    //     for (var i = pixel; i < config.data_len + pixel; i += 1u) {
+    //         let xl = f32(i) * config.samples_per_pixel;
+    //         let index = f32(i + 1u) * config.samples_per_pixel;
+    //         let c1 = audio_buf[u32(xl)] * 100.0 + 100.0;
+    //         let c2 = audio_buf[u32(index)] * 100.0 + 100.0;
+    //         if u32(xl) != u32(index) && c1 == coord {
+    //             point = i;
+    //             break;
+    //         }
+    //     }
+    // } else {
+        
+    // Calculate max, min and rms values
+    var max = -1000000.0;
+    var min= 1000000.0;
+    var sq_sum = 0.0;
 
-            sq_sum += value * value;
+    let offset = u32(f32(pixel) * config.samples_per_pixel);
+    // let increment = u32(round(1.0 / (f32(config.data_len) / config.samples_per_pixel / config.width)));
+    for (var p = 0u; p < u32(config.samples_per_pixel); p += config.increment) {
+        let value = audio_buf[offset + p];
+        if value > max {
+            max = value;
+        } else if value < min {
+            min = value;
         }
 
-        let rms = sqrt(sq_sum / (config.samples_per_pixel / f32(config.increment)));
-
-        // Convert into coordinate space
-        let max_coord = i32(max * 100.0) + 100;
-        let min_coord = i32(min * 100.0) + 100;
-
-        let max_rms = i32(rms * 100.0 * 0.5) + 100;
-        let min_rms = i32(rms * 100.0 * -0.5) + 100;
-
-        if y < max_rms && y > min_rms {
-            return config.second_color;
-        } else if y < max_coord && y > min_coord {
-            return config.main_color;
-        }
-
+        sq_sum += value * value;
     }
-    if y == 100 {
+
+    let rms = sqrt(sq_sum / (config.samples_per_pixel / f32(config.increment)));
+
+    // Convert into coordinate space
+    let max_coord = i32(max * config.scale) + i32(config.resolution.y / 2.0);
+    let min_coord = i32(min * config.scale) + i32(config.resolution.y / 2.0);
+
+    let max_rms = i32(rms * config.scale * 0.5) + i32(config.resolution.y / 2.0);
+    let min_rms = i32(rms * config.scale * -0.5) + i32(config.resolution.y / 2.0);
+
+    if y < max_rms && y > min_rms {
+        return config.second_color;
+    } else if y < max_coord && y > min_coord {
+        return config.main_color;
+    }
+
+    if y == i32(config.resolution.y / 2.0) {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     return config.bg_color;

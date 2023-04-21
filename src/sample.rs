@@ -1,51 +1,169 @@
 use std::{
+    collections::{hash_map::Entry, HashMap},
     fs::File,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
+use bytemuck::Zeroable;
 use eframe::egui_wgpu;
 use egui::Pos2;
+use wgpu::util::DeviceExt;
 
-use crate::track::{Track, WaveUniform, WaveViewState};
+use crate::{
+    id::{get_id_mgr, Id},
+    state::State,
+    track::Track,
+    wave_view::{WaveUniform, WaveViewState},
+};
+
+pub struct WaveViewSampleState {
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+
+    _audio_buffer: wgpu::Buffer,
+    audio_bind_group: wgpu::BindGroup,
+
+    wave_state: Arc<WaveViewState>,
+}
+
+impl WaveViewSampleState {
+    pub fn uniform_bind_group(&self) -> &wgpu::BindGroup {
+        &self.uniform_bind_group
+    }
+
+    pub fn audio_bind_group(&self) -> &wgpu::BindGroup {
+        &self.audio_bind_group
+    }
+
+    pub fn paint<'rp>(&'rp self, rpass: &mut wgpu::RenderPass<'rp>) {
+        rpass.set_pipeline(&self.wave_state.pipeline);
+        rpass.set_vertex_buffer(0, self.wave_state.vertex_buffer.slice(..));
+
+        rpass.set_bind_group(0, self.audio_bind_group(), &[]);
+        rpass.set_bind_group(1, self.uniform_bind_group(), &[]);
+
+        rpass.draw(0..4, 0..1);
+    }
+}
 
 pub struct Sample {
+    pub id: Id,
+
     pub name: String,
-    path: PathBuf,
+    _path: PathBuf,
 
     pub header: wav::Header,
     pub data: wav::BitDepth,
+
+    wgpu_state: Arc<WaveViewSampleState>,
 }
 
 impl Sample {
-    pub fn load_from_file(path: impl AsRef<Path>) -> io::Result<Sample> {
+    pub fn load_from_file(
+        path: impl AsRef<Path>,
+        name: Option<impl ToString>,
+        app_state: &Arc<RwLock<State>>,
+    ) -> io::Result<Sample> {
         let mut file = File::open(&path)?;
         let (header, data) = wav::read(&mut file)?;
 
+        let app_state = app_state.read().unwrap();
+        let audio_buffer =
+            app_state
+                .wgpu_ctx
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("wave_view_aduio_buffer"),
+                    contents: bytemuck::cast_slice(&data.as_thirty_two_float().unwrap()),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+
+        let audio_bind_group =
+            app_state
+                .wgpu_ctx
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("wave_view_audio_buffer"),
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: audio_buffer.as_entire_binding(),
+                    }],
+                    layout: &app_state.wave_view_state.audio_buffer_layout,
+                });
+
+        let uniform_buffer =
+            app_state
+                .wgpu_ctx
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("wave_form_uniform_buffer"),
+                    contents: bytemuck::cast_slice(&[WaveUniform::zeroed()]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+
+        let uniform_bind_group =
+            app_state
+                .wgpu_ctx
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("wave_view_uniform_buffer"),
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    }],
+                    layout: &app_state.wave_view_state.uniform_layout,
+                });
+
         Ok(Sample {
-            name: path
-                .as_ref()
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string(),
-            path: path.as_ref().to_path_buf(),
+            id: get_id_mgr().gen_id(),
+            name: name.map(|n| n.to_string()).unwrap_or_else(|| {
+                path.as_ref()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            }),
+            _path: path.as_ref().to_path_buf(),
 
             header,
             data,
+
+            wgpu_state: Arc::new(WaveViewSampleState {
+                uniform_buffer,
+                uniform_bind_group,
+
+                _audio_buffer: audio_buffer,
+                audio_bind_group,
+
+                wave_state: app_state.wave_view_state.clone(),
+            }),
         })
     }
 
     pub fn adjusted_len(&self, track: &Track) -> u64 {
         let sample_data_len = track.view_range.end as usize;
-        let adjusted_len = sample_data_len.min(self.data.as_thirty_two_float().unwrap().len());
+        let adjusted_len = sample_data_len.min(self.len());
 
         adjusted_len as u64
     }
 
-    pub fn display(&self, ui: &mut egui::Ui, rect: egui::Rect, track: &Track) {
+    pub fn len(&self) -> usize {
+        match &self.data {
+            wav::BitDepth::ThirtyTwoFloat(data) => data.len(),
+            _ => 0,
+        }
+    }
+
+    pub fn display(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        track: &Track,
+        sample_offset: usize,
+    ) -> usize {
         // Require at least 1/2 pixel per sample for drawing individual samples.
         let sample_threshold = 10.0;
         // Require at least 3 pixels per sample for drawing the draggable points.
@@ -53,15 +171,17 @@ impl Sample {
 
         // Width of viewport
         let width = rect.width();
+        let height = rect.height();
         let sample_data = self.data.as_thirty_two_float().unwrap();
 
         // Samples
-        let sample_data_len = track.view_range.end as usize;
+        let sample_data_len = track.view_range.len() as usize - sample_offset;
 
         // Y-scale factor
         let scale = 100.0;
 
         let main_color = egui::Color32::from_rgb(181, 20, 9);
+
         let second_color = egui::Color32::from_rgb(227, 91, 82);
         let bg_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 0);
 
@@ -117,63 +237,58 @@ impl Sample {
                 last = *sample;
             }
         } else {
+            let wave_state = self.wgpu_state.clone();
+            let id = self.id;
+
             // Render a shader to display larger zommed-out data
             let cb = egui_wgpu::CallbackFn::new()
-                .prepare(move |device, queue, _encoder, paint_callback_resources| {
-                    let bind_group = {
-                        let buffer: &Arc<wgpu::Buffer> = paint_callback_resources.get().unwrap();
+                .prepare(move |_device, queue, _encoder, paint_callback_resources| {
+                    let uniform = wave_state.as_ref();
+                    let uniform = &uniform.uniform_buffer;
 
-                        let resources: &WaveViewState = paint_callback_resources.get().unwrap();
+                    queue.write_buffer(
+                        &uniform,
+                        0,
+                        bytemuck::cast_slice(&[WaveUniform {
+                            height,
+                            width,
+                            samples_per_pixel,
+                            yscale: scale,
+                            data_len: adjusted_len as u32,
+                            increment: (1.0
+                                / (adjusted_len as f32 / (sample_data_len as f32 / width) / width))
+                                .round() as u32,
 
-                        queue.write_buffer(
-                            &resources.uniform_buffer,
-                            0,
-                            bytemuck::cast_slice(&[WaveUniform {
-                                width,
-                                samples_per_pixel,
-                                yscale: scale,
-                                data_len: sample_data_len.min(actual_len) as u32,
-                                increment: (1.0
-                                    / (adjusted_len as f32
-                                        / (sample_data_len as f32 / width)
-                                        / width))
-                                    .round() as u32,
+                            _padding: [0; 2],
 
-                                _padding: [0; 3],
+                            main_color: main_color.to_normalized_gamma_f32(),
+                            second_color: second_color.to_normalized_gamma_f32(),
 
-                                main_color: main_color.to_normalized_gamma_f32(),
-                                second_color: second_color.to_normalized_gamma_f32(),
+                            bg_color: bg_color.to_normalized_gamma_f32(),
+                        }]),
+                    );
 
-                                bg_color: bg_color.to_normalized_gamma_f32(),
-                            }]),
-                        );
+                    let map: &mut HashMap<Id, Arc<WaveViewSampleState>> =
+                        paint_callback_resources.get_mut().unwrap();
 
-                        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("wave_view_audio_buffer"),
-                            entries: &[wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: buffer.as_entire_binding(),
-                            }],
-                            layout: &resources.audio_buffer_layout,
-                        });
-
-                        bind_group
-                    };
-                    let resources: &mut WaveViewState = paint_callback_resources.get_mut().unwrap();
-                    resources.audio_buffer_bind_group = Some(bind_group);
+                    match map.entry(id) {
+                        Entry::Occupied(_) => (),
+                        Entry::Vacant(entry) => {
+                            entry.insert(wave_state.clone());
+                        }
+                    }
 
                     Vec::new()
                 })
                 .paint(move |_info, render_pass, paint_callback_resources| {
-                    let resources: &WaveViewState = paint_callback_resources.get().unwrap();
+                    let resources: &HashMap<Id, Arc<WaveViewSampleState>> =
+                        paint_callback_resources.get().unwrap();
 
-                    // type_name()
+                    let id = id;
 
-                    // let val = 9330782273713993017;
-                    // let ti = unsafe { std::mem::transmute::<u64, TypeId>(val) };
-                    // println!("{:?} {}", paint_callback_resources, type_name());
-
-                    resources.paint(render_pass);
+                    if let Some(sample) = resources.get(&id) {
+                        sample.paint(render_pass);
+                    }
                 });
 
             let callback = egui::PaintCallback {
@@ -183,5 +298,7 @@ impl Sample {
 
             ui.painter().add(callback);
         }
+
+        actual_len
     }
 }
