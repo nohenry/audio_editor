@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
     f32::consts::PI,
+    fs::File,
+    io::{self, Cursor, Seek, Write},
+    slice::{Iter, IterMut},
     sync::{Arc, RwLock},
 };
 
@@ -9,6 +12,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     SampleFormat,
 };
+use egui::output;
 use id::Id;
 use rubato::Resampler;
 use sample::WaveViewSampleState;
@@ -69,7 +73,8 @@ fn main() {
 
             // Load test sample
             let sample = Arc::new(
-                sample::Sample::load_from_file("sample12.wav", Some("Sample 1"), &state).unwrap(),
+                sample::Sample::load_from_file("sample_short.wav", Some("Sample 1"), &state)
+                    .unwrap(),
             );
             let track_sample = sample.clone();
 
@@ -79,13 +84,13 @@ fn main() {
             let track_sample2 = sample2.clone();
 
             let sample3 = Arc::new(
-                sample::Sample::load_from_file("sine44048.wav", Some("Sample 2"), &state).unwrap(),
+                sample::Sample::load_from_file("sine440.wav", Some("Sample 2"), &state).unwrap(),
             );
             let track_sample3 = sample3.clone();
 
             let track = Arc::new(RwLock::new(Track::new(
                 "Track",
-                vec![track_sample.clone()],
+                vec![track_sample.clone(), track_sample3.clone()],
                 track_state.clone(),
             )));
 
@@ -137,24 +142,12 @@ fn start_audio(
     let target_sample_rate = supported_config.sample_rate();
     let target_sample_count = supported_config.channels();
 
-    let f0 = 10.hz();
-    let fs = (12000.0 / 100.0).hz();
-
-    // Create coefficients for the biquads
-    let coeffs =
-        Coefficients::<f32>::from_params(Type::LowPass, fs, f0, Q_BUTTERWORTH_F32).unwrap();
-
-    let mut filter = DirectForm1::<f32>::new(coeffs);
-
-    let mut absolute_index = 0.0;
+    let mut absolute_index = 0;
     let mut current_index = 0.0;
     let mut current_id = Id::NULL;
 
     let mut output_index = vec![0; tracks.len()];
 
-    for track in &tracks {
-        let track = track.read();
-    }
     let buffer_size = match supported_config.buffer_size() {
         cpal::SupportedBufferSize::Range { max, .. } => *max,
         _ => 0,
@@ -176,20 +169,25 @@ fn start_audio(
                             f_cutoff: 0.95,
                             interpolation: rubato::InterpolationType::Linear,
                             oversampling_factor: 256,
-                            window: rubato::WindowFunction::BlackmanHarris2,
+                            window: rubato::WindowFunction::Blackman,
                         };
 
-                        Some(
-                            rubato::SincFixedOut::<f32>::new(
-                                target_sample_rate.0 as f64 / sample.header.sampling_rate as f64,
-                                2.0,
-                                params,
-                                buffer_size as _,
-                                // 2,
-                                sample.header.channel_count as _,
-                            )
-                            .unwrap(),
+                        let resampler = rubato::SincFixedOut::<f32>::new(
+                            target_sample_rate.0 as f64 / sample.header.sampling_rate as f64,
+                            2.0,
+                            params,
+                            buffer_size as usize / 2,
+                            sample.header.channel_count as _,
                         )
+                        .unwrap();
+
+                        let buffer = vec![
+                            Vec::with_capacity(sample.len());
+                            sample.header.channel_count as usize
+                        ];
+                        let index = 0usize;
+
+                        Some((resampler, buffer, index))
                     } else {
                         None
                     }
@@ -217,20 +215,17 @@ fn start_audio(
             write_track(
                 track,
                 &mut absolute_index,
-                &mut ind.0,
                 output,
-                &mut ind.1,
                 target_sample_count,
                 target_sample_rate.0 as u64,
                 sample_data,
-                &mut filter,
                 resampler,
                 &mut output_buffer,
             )
         }
 
         for sample_point in sample_data {
-            *sample_point = sample_point.tanh();
+            // *sample_point = sample_point.tanh();
         }
 
         let state = state.read().unwrap();
@@ -260,158 +255,269 @@ fn start_audio(
     stream
 }
 
-fn linear_interpolation(x0: f32, x1: f32, t: f32) -> f32 {
-    x0 * (1.0 - t) + x1 * t
-}
-
 #[inline(always)]
 fn normalize(sample: f32) -> f32 {
-    // (sample + 1.0) * 0.5
-    sample
-}
-
-#[inline(always)]
-fn cubic_spline_interpolation(x0: f32, x1: f32, x2: f32, x3: f32, t: f32) -> f32 {
-    let c0 = x1;
-    let c1 = 0.5 * (x2 - x0);
-    let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
-    let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
-    ((c3 * t + c2) * t + c1) * t + c0
-}
-
-fn sinc(x: f32) -> f32 {
-    if x == 0.0 {
-        1.0
-    } else {
-        (PI * x).sin() / (PI * x)
-    }
-}
-
-fn windowed_sinc(x: f32, window_size: usize) -> f32 {
-    let mut y = x / window_size as f32;
-    y *= PI;
-    let w = y.sin() / y;
-    let window = (0..window_size)
-        .map(|i| {
-            let n = i as f32 - window_size as f32 / 2.0;
-            0.54 - 0.46 * ((2.0 * PI * n) / (window_size as f32 - 1.0)).cos()
-        })
-        .fold(1.0, |acc, x| acc * x);
-    w * window
+    (sample + 1.0) * 0.5
+    // sample
 }
 
 fn write_track(
     track: &Arc<RwLock<Track>>,
-    absolute_index: &mut f64,
-    current_index: &mut f64,
-    output_index: &mut u64,
-    current_id: &mut Id,
+    absolute_index: &mut usize,
+    output_index: &mut usize,
     target_sample_count: u16,
     target_sample_rate: u64,
     sample_data: &mut [f32],
-    filter: &mut DirectForm1<f32>,
-    resamplers: &mut Vec<Option<rubato::SincFixedOut<f32>>>,
+    resamplers: &mut Vec<Option<(impl rubato::Resampler<f32>, Vec<Vec<f32>>, usize)>>,
     resampling_buffer: &mut [Vec<f32>],
 ) {
     let track = track.read().unwrap();
-    let Some((mut sample, mut sample_index)) = track.sample_at_index(*output_index as usize, target_sample_rate as f64) else {
+    let Some((sample, sample_index)) = track.sample_at_sample_index(*absolute_index as usize, target_sample_rate as f64) else {
         return;
     };
 
-    if *current_id != sample.id {
-        *current_index = 0.0;
-        *current_id = sample.id;
-    }
+    let data = sample.data.as_thirty_two_float().unwrap();
 
-    let mut data = sample.data.as_thirty_two_float().unwrap();
+    let adjusted_len = sample_data.len() / target_sample_count as usize;
+    if let Some((resampler, buffer, index)) = &mut resamplers[sample_index] {
+        if *index >= data.len() {
+            *absolute_index += adjusted_len;
+            *output_index = 0;
 
-    if sample.header.channel_count == target_sample_count {
-        for sd in sample_data.chunks_mut(target_sample_count as usize) {
-            // for (i, s) in sd.iter_mut().enumerate() {
-            // *s = data[index as usize + i] * 0.2;
-            // }
-            sd.copy_from_slice(
-                &data[*current_index as usize
-                    ..*current_index as usize + target_sample_count as usize],
+            return;
+        } else if *index + resampler.input_frames_next() >= data.len() {
+            let data = vec![data[*index..].to_vec(), vec![0.0f32; data.len() - *index]].concat();
+
+            *index += resample(
+                &data,
+                resampling_buffer,
+                buffer,
+                0,
+                sample.header.channel_count,
+                *output_index,
+                sample_data.len() / (target_sample_count as usize),
+                resampler,
             );
 
-            // *current_index += (sample.header.channel_count as f64)
-            //     * (sample.header.sampling_rate as f64 / target_sample_rate as f64);
+            channel_router_split_input(
+                sample.header.channel_count,
+                target_sample_count,
+                &buffer,
+                sample_data,
+                *output_index,
+            );
 
-            // *absolute_index += (sample.header.channel_count as f64)
-            //     * (sample.header.sampling_rate as f64 / target_sample_rate as f64);
+            *absolute_index += adjusted_len;
+            *output_index += adjusted_len;
+
+            return;
         }
-    } else if sample.header.channel_count == 1 {
-        // let left = sample_data
-        if let Some(resampler) = &mut resamplers[sample_index] {
-            let mut data = [&data[*output_index as usize
-                ..*output_index as usize + 250]];
-            println!("{}", data[0].len());
-            let buffer = resampler.process(&data, None).unwrap();
-            // resampler
-            //     .process_into_buffer(&mut data, resampling_buffer, None)
-            //     .unwrap();
 
-            for (i, sd) in sample_data
-                .chunks_mut(target_sample_count as usize)
-                .enumerate()
-            {
-                for dst in sd.iter_mut() {
-                    *dst = buffer[0][i]
-                }
-            }
+        *index += resample(
+            &data,
+            resampling_buffer,
+            buffer,
+            *index,
+            sample.header.channel_count,
+            *output_index,
+            sample_data.len() / (target_sample_count as usize),
+            resampler,
+        );
 
-            // sample_data.copy_from_slice(&resampling_buffer[0]);
+        channel_router_split_input(
+            sample.header.channel_count,
+            target_sample_count,
+            &buffer,
+            sample_data,
+            *output_index,
+        );
+
+        *absolute_index += adjusted_len;
+        *output_index += adjusted_len;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+enum Speaker {
+    FrontLeft = 0,
+    FrontRight = 1,
+    Center = 2,
+    Subwoofer = 3,
+    SideLeft = 4,
+    SideRight = 5,
+    RearLeft = 6,
+    RearRight = 7,
+    HeightLeft1 = 8,
+    HeightRight1 = 9,
+    HeightLeft2 = 10,
+    HeightRight2 = 11,
+}
+
+impl Speaker {
+    pub const fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    pub const fn len(&self) -> u16 {
+        *self as u16 + 1
+    }
+
+    pub const fn ind(self) -> u16 {
+        self as u16 + 1
+    }
+
+    pub const fn from_ind(ind: u16) -> Speaker {
+        match ind - 1 {
+            0 => Speaker::FrontLeft,
+            1 => Speaker::FrontRight,
+            2 => Speaker::Center,
+            3 => Speaker::Subwoofer,
+            4 => Speaker::SideLeft,
+            5 => Speaker::SideRight,
+            6 => Speaker::RearLeft,
+            7 => Speaker::RearRight,
+            8 => Speaker::HeightLeft1,
+            9 => Speaker::HeightRight1,
+            10 => Speaker::HeightLeft2,
+            11 => Speaker::HeightRight2,
+            _ => panic!("Unsupported speaker index!"),
         }
-        *output_index += 120;
-        // for sd in sample_data.chunks_mut(target_sample_count as usize) {
-        //     if *current_index as usize >= data.len() {
-        //         let Some((ssample, index)) = track.sample_at_index(*output_index as usize, target_sample_rate as f64) else {
-        //             return;
-        //         };
+    }
+}
 
-        //         sample = ssample;
-        //         sample_index = index;
-        //         data = sample.data.as_thirty_two_float().unwrap();
+impl Into<u8> for Speaker {
+    fn into(self) -> u8 {
+        self as u8
+    }
+}
 
-        //         *current_index = 0.0;
-        //     }
+impl From<u8> for Speaker {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Speaker::FrontLeft,
+            1 => Speaker::FrontRight,
+            2 => Speaker::Center,
+            3 => Speaker::Subwoofer,
+            4 => Speaker::SideLeft,
+            5 => Speaker::SideRight,
+            6 => Speaker::RearLeft,
+            7 => Speaker::RearRight,
+            8 => Speaker::HeightLeft1,
+            9 => Speaker::HeightRight1,
+            10 => Speaker::HeightLeft2,
+            11 => Speaker::HeightRight2,
+            _ => panic!("Unsupported speaker index!"),
+        }
+    }
+}
 
-        //     let value = data[*output_index as usize];
+fn channel_router<'a>(
+    input_channels: u16,
+    output_channels: u16,
+    input: &[f32],
+    output: &mut [f32],
+) {
+    match (
+        Speaker::from_ind(input_channels),
+        Speaker::from_ind(output_channels),
+    ) {
+        (Speaker::FrontLeft, _) => output
+            .chunks_exact_mut(output_channels as _)
+            .zip(input.iter())
+            .for_each(|(o, i)| o.fill(*i)),
+        (i, o) if i >= o => output.copy_from_slice(&input[..output_channels as usize]),
+        (_, _) => output
+            .chunks_exact_mut(output_channels as _)
+            .zip(input.chunks(input_channels as _))
+            .for_each(|(o, i)| {
+                o[..2].copy_from_slice(&i[..2]);
+                o[2..4.min(input_channels as usize)]
+                    .copy_from_slice(&i[2..4.min(input_channels as usize)]);
+                o[4..]
+                    .chunks_exact_mut(2)
+                    .for_each(|o| o.copy_from_slice(&i[..2]));
+            }),
+    }
+}
 
-        //     // let original_sample_index = *output_index as f64
-        //     //     / (target_sample_rate as f64 / sample.header.sampling_rate as f64);
-        //     // let floor_original_sample_index = original_sample_index.floor() as usize;
-        //     // let fractional_part = original_sample_index - floor_original_sample_index as f64;
+fn channel_router_split_input<'a>(
+    input_channels: u16,
+    output_channels: u16,
+    input: &[impl AsRef<[f32]>],
+    output: &mut [f32],
+    input_offset: usize,
+) {
+    match (
+        Speaker::from_ind(input_channels),
+        Speaker::from_ind(output_channels),
+    ) {
+        (Speaker::FrontLeft, _) => output
+            .chunks_exact_mut(output_channels as _)
+            .zip(input[0].as_ref()[input_offset..].iter())
+            .for_each(|(o, i)| o.fill(*i)),
+        (i, o) if i >= o => {
+            (0..output_channels as usize).for_each(|c| {
+                output
+                    .iter_mut()
+                    .skip(c)
+                    .step_by(output_channels as usize)
+                    .enumerate()
+                    .for_each(|(i, o)| *o = input[c].as_ref()[i + input_offset])
+            });
+        }
+        (_, _) => output
+            .chunks_exact_mut(output_channels as _)
+            .enumerate()
+            .for_each(|(i, o)| {
+                let ins = input[..input_offset].iter().map(|f| f.as_ref()[i]);
+                o[..2].iter_mut().zip(ins).for_each(|o| *o.0 = o.1);
+            }),
+    }
+}
 
-        //     // let value = if floor_original_sample_index + 3 < sample.len() {
-        //     //     let value = cubic_spline_interpolation(
-        //     //         normalize(data[floor_original_sample_index]),
-        //     //         normalize(data[floor_original_sample_index + 1]),
-        //     //         normalize(data[floor_original_sample_index + 2]),
-        //     //         normalize(data[floor_original_sample_index + 3]),
-        //     //         fractional_part as f32,
-        //     //     );
+fn strip_samples_iter(data: &[f32], channels: usize) -> Vec<impl Iterator<Item = f32> + '_> {
+    (0..channels)
+        .map(|c| data.iter().copied().skip(c).step_by(channels))
+        .collect()
+}
 
-        //     //     // let value = filter.run(value);
+fn strip_samples(data: &[f32], channels: usize) -> Vec<Vec<f32>> {
+    (0..channels)
+        .map(|c| data.iter().copied().skip(c).step_by(channels).collect())
+        .collect()
+}
 
-        //     //     value
-        //     // } else {
-        //     //     normalize(data[floor_original_sample_index])
-        //     // };
+fn resample(
+    data: &[f32],
+    resampling_buffer: &mut [Vec<f32>],
+    output_buffer: &mut [Vec<f32>],
+    input_offset: usize,
+    input_channels: u16,
+    output_offset: usize,
+    output_len: usize,
+    resampler: &mut impl rubato::Resampler<f32>,
+) -> usize {
+    if output_buffer[0].len() > output_offset && output_len < output_buffer[0].len() - output_offset
+    {
+        0
+    } else {
+        // Only resample if we've used up the output buffer
+        let len = resampler.input_frames_next();
+        let sample_channels = strip_samples(
+            &data[input_offset..input_offset + len],
+            input_channels as usize,
+        );
 
-        //     for s in sd {
-        //         *s += value;
-        //     }
+        resampler
+            .process_into_buffer(&sample_channels, resampling_buffer, None)
+            .unwrap();
 
-        //     // *current_index += (sample.header.channel_count as f64)
-        //     //     * (sample.header.sampling_rate as f64 / target_sample_rate as f64);
+        for i in 0..input_channels as usize {
+            output_buffer[i].extend_from_slice(&resampling_buffer[i][..]);
+        }
 
-        //     *output_index += 1;
-
-        //     // *absolute_index += (sample.header.channel_count as f64)
-        //     //     * (sample.header.sampling_rate as f64 / target_sample_rate as f64);
-        // }
+        len
     }
 }
 

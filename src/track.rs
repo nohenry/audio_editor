@@ -46,14 +46,18 @@ impl Track {
         })
     }
 
-    pub fn sample_at_index(&self, index: usize, target_rate: f64) -> Option<(&Arc<Sample>, usize)> {
+    pub fn sample_at(&self, index: usize) -> &Arc<Sample> {
+        &self.samples[index]
+    }
+
+    pub fn sample_at_sample_index(&self, index: usize, target_rate: f64) -> Option<(&Arc<Sample>, usize)> {
         let mut offset = 0;
         let ind = self.samples.iter().position(|x| {
             let factor = target_rate / x.header.sampling_rate as f64;
             if index >= offset && index < offset + (x.len() as f64 * factor) as usize {
                 true
             } else {
-                offset += x.len();
+                offset += (x.len() as f64 * factor) as usize;
                 false
             }
         });
