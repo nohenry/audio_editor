@@ -46,18 +46,19 @@ impl Track {
         })
     }
 
-    pub fn sample_at_index(&self, index: usize) -> Option<&Arc<Sample>> {
+    pub fn sample_at_index(&self, index: usize, target_rate: f64) -> Option<(&Arc<Sample>, usize)> {
         let mut offset = 0;
-        println!("{}", index);
-        self.samples.iter().find(|&x| {
-            println!("off: {}", offset);
-            if index >= offset && index < offset + x.len() {
+        let ind = self.samples.iter().position(|x| {
+            let factor = target_rate / x.header.sampling_rate as f64;
+            if index >= offset && index < offset + (x.len() as f64 * factor) as usize {
                 true
             } else {
                 offset += x.len();
                 false
             }
-        })
+        });
+
+        ind.map(|i| (&self.samples[i], i))
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
@@ -171,6 +172,7 @@ impl Track {
                         let mut time_offset = 0.0;
 
                         let track_width = ui.available_width();
+                        let xstart = ui.max_rect().min.x;
 
                         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
@@ -255,9 +257,12 @@ impl Track {
                             if state.playing {
                                 if let Some(duration) = state.duration_played() {
                                     let millis = duration.as_millis() as f32;
-                                    if (millis as f64) > time_offset * 1000.0 {
-                                        let x = (millis * pixels_per_millis + rect.left()).round()
-                                            + 0.5;
+                                    if (millis as f64) > time_offset * 1000.0
+                                        && (millis as f64)
+                                            < time_offset * 1000.0
+                                                + sample.len_time().as_secs_f64() * 1000.0
+                                    {
+                                        let x = (millis * pixels_per_millis + xstart).round() + 0.5;
 
                                         ui.painter().line_segment(
                                             [Pos2::new(x, rect.bottom()), Pos2::new(x, rect.top())],
