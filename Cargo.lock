@@ -393,6 +393,7 @@ dependencies = [
  "once_cell",
  "rand",
  "rubato",
+ "tracing",
  "tracing-subscriber",
  "wav",
  "wgpu",
