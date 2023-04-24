@@ -17,6 +17,7 @@ mod playback;
 mod sample;
 mod state;
 mod track;
+mod util;
 mod wave_view;
 
 fn main() {
@@ -92,7 +93,7 @@ fn main() {
                 track_state,
             )));
 
-            let stream = start_audio(device, vec![track.clone()], state);
+            let stream = start_audio(device, vec![track.clone(), track2.clone()], state);
 
             Box::new(Application::new(
                 cc,

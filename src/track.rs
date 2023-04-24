@@ -6,12 +6,17 @@ use std::{
 
 use egui::Pos2;
 
-use crate::{sample::Sample, state::State};
+use crate::{
+    sample::Sample,
+    state::State,
+    util::{PixelRange, SampleRange},
+};
 
 pub struct Track {
     pub name: String,
     pub samples: Vec<Arc<Sample>>,
-    pub view_range: Range<isize>,
+    pub view_range: Range<u64>,
+    pub cached_times: Vec<u64>,
 
     pub app_state: Arc<RwLock<State>>,
 }
@@ -24,11 +29,25 @@ impl Track {
         samples: Vec<Arc<Sample>>,
         app_state: Arc<RwLock<State>>,
     ) -> Track {
+        let sample_times = samples
+            .iter()
+            .scan(0, |state, sample| {
+                let micros = sample.len_time().as_micros() as u64;
+                let old_state = *state;
+                *state += micros;
+
+                Some(old_state)
+            })
+            .collect();
+
         Track {
             name: name.into(),
             samples,
             app_state,
-            view_range: 0..5000000,
+            cached_times: sample_times,
+
+            view_range: Duration::from_secs(0).as_micros() as u64
+                ..Duration::from_secs(20).as_micros() as u64,
         }
     }
 
@@ -50,7 +69,11 @@ impl Track {
         &self.samples[index]
     }
 
-    pub fn sample_at_sample_index(&self, index: usize, target_rate: f64) -> Option<(&Arc<Sample>, usize)> {
+    pub fn sample_at_sample_index(
+        &self,
+        index: usize,
+        target_rate: f64,
+    ) -> Option<(&Arc<Sample>, usize)> {
         let mut offset = 0;
         let ind = self.samples.iter().position(|x| {
             let factor = target_rate / x.header.sampling_rate as f64;
@@ -63,6 +86,165 @@ impl Track {
         });
 
         ind.map(|i| (&self.samples[i], i))
+    }
+
+    pub fn time_rel_left(&self, absolute_time: u64) -> Option<u64> {
+        absolute_time.checked_sub(self.view_range.start)
+    }
+
+    pub fn calculate_times(&mut self) {
+        self.cached_times.clear();
+        self.cached_times
+            .extend(self.samples.iter().scan(0, |state, sample| {
+                let micros = sample.len_time().as_micros() as u64;
+                let old_state = *state;
+                *state += micros;
+
+                Some(old_state)
+            }));
+    }
+
+    /// Get the bounds of the sample in number of sample points while respecting the view boundries
+    ///
+    /// `sample_index` should be the index of a sample that this track contains
+    ///
+    /// If the sample is outside of the view range, `None` is returned
+    pub fn get_clip_sample_width(&self, sample_index: usize) -> Option<SampleRange> {
+        let sample = self.sample_at(sample_index);
+        let start_time = self.cached_times[sample_index];
+        let end_time = start_time + sample.len_time().as_micros() as u64;
+
+        if end_time < self.view_range.start || start_time > self.view_range.end {
+            return None;
+        }
+
+        match (
+            self.view_range.contains(&start_time),
+            self.view_range.contains(&end_time),
+        ) {
+            (false, false) => Some(SampleRange {
+                min: ((self.view_range.start - start_time) as f64 * sample.sample_rate).floor()
+                    as u64,
+                max: ((self.view_range.end - start_time) as f64 * sample.sample_rate).ceil() as u64,
+            }),
+            (true, false) => Some(SampleRange {
+                min: 0,
+                max: ((self.view_range.end - start_time) as f64 * sample.sample_rate) as u64,
+            }),
+            (false, true) => Some(SampleRange {
+                min: ((self.view_range.start - start_time) as f64 * sample.sample_rate) as u64,
+                max: sample.len() as u64,
+            }),
+            (true, true) => Some(SampleRange {
+                min: 0,
+                max: sample.len() as u64,
+            }),
+        }
+    }
+
+    /// Get the pixel position (horizontally) in the given width and view range of a duration
+    ///
+    /// `duration` is the time relative to the beginning of the track
+    /// `width` is the width of the timeline
+    ///
+    /// If the duration does not fall inside the view range, `None` is return
+    pub fn get_pixel_from_duration(&self, duration: &Duration, width: f32) -> Option<f32> {
+        let micros = duration.as_micros() as u64;
+
+        if self.view_range.contains(&micros) {
+            Some(width / (self.view_range.end - self.view_range.start) as f32 * micros as f32)
+        } else {
+            None
+        }
+    }
+
+    /// Get the pixel position (horizontally) in the given width and view range of a duration
+    ///
+    /// `duration` is the time relative to the beginning of the sample
+    /// `width` is the width of the timeline
+    ///
+    /// If the duration does not fall inside the sample, `None` is return
+    pub fn get_pixel_from_duration_sample(
+        &self,
+        sample_index: usize,
+        duration: &Duration,
+        width: f32,
+    ) -> Option<f32> {
+        let sample = self.sample_at(sample_index);
+        let start_time = self.cached_times[sample_index];
+        let end_time = start_time + sample.len_time().as_micros() as u64;
+
+        let micros = duration.as_micros() as u64;
+
+        let pixels_per_micro = width / (self.view_range.end - self.view_range.start) as f32;
+
+        if micros < self.view_range.start
+            || micros > self.view_range.end
+            || micros < start_time
+            || micros > end_time
+        {
+            return None;
+        }
+
+        match (
+            self.view_range.contains(&start_time),
+            self.view_range.contains(&end_time),
+        ) {
+            (false, false) => Some(
+                pixels_per_micro * micros as f32
+                    - pixels_per_micro * (self.view_range.start - start_time) as f32,
+            ),
+            (true, false) => Some(
+                pixels_per_micro * micros as f32
+                    - pixels_per_micro * (start_time - self.view_range.start) as f32,
+            ),
+            (false, true) => Some(
+                pixels_per_micro * micros as f32
+                    - pixels_per_micro * (self.view_range.start - start_time) as f32,
+            ),
+            (true, true) => {
+                Some(pixels_per_micro * micros as f32 - pixels_per_micro * (start_time) as f32)
+            }
+        }
+    }
+
+    /// Get the pixel range the provided sample occupies on the timeline
+    ///
+    /// `sample_index` should be the index of a sample that this track contains
+    ///
+    /// If the sample is outside of the view range, `None` is returned
+    pub fn get_clip_pixel_width(&self, width: f32, sample_index: usize) -> Option<PixelRange> {
+        let sample = self.sample_at(sample_index);
+        let start_time = self.cached_times[sample_index];
+        let end_time = start_time + sample.len_time().as_micros() as u64;
+
+        let pixels_per_micro = width / (self.view_range.end - self.view_range.start) as f32;
+
+        if end_time < self.view_range.start || start_time > self.view_range.end {
+            return None;
+        }
+
+        match (
+            self.view_range.contains(&start_time),
+            self.view_range.contains(&end_time),
+        ) {
+            (false, false) => Some(PixelRange {
+                min: 0.0,
+                max: width,
+            }),
+            (true, false) => Some(PixelRange {
+                min: pixels_per_micro * (start_time - self.view_range.start) as f32,
+                max: width,
+            }),
+            (false, true) => Some(PixelRange {
+                min: 0.0,
+                max: pixels_per_micro * (end_time - self.view_range.start) as f32,
+            }),
+            (true, true) => Some(PixelRange {
+                min: pixels_per_micro * start_time as f32,
+                max: pixels_per_micro * end_time as f32,
+            }),
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
@@ -98,15 +280,36 @@ impl Track {
 
                     ui.separator();
 
-                    let (rect, _) = ui.allocate_exact_size(
+                    let (rect, bg_response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), ui.available_height()),
                         egui::Sense::drag(),
                     );
                     // Change the preview zoom on scroll
-                    let scoll_delta = ui.ctx().input(|input| input.scroll_delta);
-                    // Scroll faster when zoomed out more. This makes zoom feel more consistent
-                    self.view_range.end = self.view_range.end
-                        + (scoll_delta.y * self.view_range.len() as f32 / 1000.0) as isize;
+                    let (scoll_delta, bg_pos) = ui
+                        .ctx()
+                        .input(|input| (input.scroll_delta, input.pointer.hover_pos()));
+
+                    if let Some(bg_pos) = bg_pos {
+                        if rect.contains(bg_pos) {
+                            let dist = (bg_pos.x - rect.min.x) / rect.width();
+
+                            // Scroll faster when zoomed out more. This makes zoom feel more consistent
+                            let delta = scoll_delta.y
+                                * (self.view_range.end - self.view_range.start) as f32
+                                / 5000.0;
+
+                            if delta.abs() > 0.0 {
+                                self.view_range.start =
+                                    (self.view_range.start as f32 + delta * dist)
+                                        .round()
+                                        .max(0.0) as u64;
+
+                                self.view_range.end =
+                                    (self.view_range.end as f32 - delta * (1.0 - dist)).round()
+                                        as u64;
+                            }
+                        }
+                    }
 
                     // } else {
                     //     let data: Vec<_> = sample_data[..sample_data_len as usize]
@@ -169,36 +372,21 @@ impl Track {
                     let width = rect.width();
 
                     ui.allocate_ui_at_rect(rect, |ui| {
-                        let sample_data_len = self.view_range.end as usize;
-                        let samples_per_pixel = sample_data_len as f32 / width;
-
                         let mut offset = 0;
                         let mut time_offset = 0.0;
 
-                        let track_width = ui.available_width();
-                        let xstart = ui.max_rect().min.x;
-
                         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
-                        for sample in &self.samples {
-                            if ((offset + sample.len()) as isize) < self.view_range.start {
+                        for (index, sample) in self.samples.iter().enumerate() {
+                            let Some(pixel_range) = self.get_clip_pixel_width(width, index) else {
                                 continue;
-                            } else if offset as isize > self.view_range.end {
-                                break;
-                            }
-
-                            // Samples
-                            let pixels_per_millis =
-                                sample.header.sampling_rate as f32 / samples_per_pixel / 1000.0;
-
-                            let sample_width = (sample.adjusted_len(self)) as f32
-                                / (self.view_range.len() as f32 / track_width);
+                            };
 
                             let sample_response = ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
                                 let res = ui.allocate_ui_with_layout(
-                                    egui::vec2(sample_width, 20.0),
+                                    egui::vec2(pixel_range.len().round(), 20.0),
                                     egui::Layout::left_to_right(egui::Align::Min),
                                     |ui| {
                                         egui::Frame::none()
@@ -241,12 +429,14 @@ impl Track {
                                     // .shadow(egui::epaint::Shadow::small_dark())
                                     .show(ui, |ui| {
                                         let mut new_rect = ui.max_rect();
-                                        new_rect
-                                            .set_width(sample_width.max(res.response.rect.width()));
+
+                                        new_rect.set_width(
+                                            pixel_range.len().max(res.response.rect.width()),
+                                        );
                                         ui.allocate_rect(new_rect, egui::Sense::drag());
 
-                                        sample.display(ui, new_rect, self, offset);
-                                        offset += sample.len();
+                                        sample.display(ui, new_rect, self, index);
+                                        offset += sample.len() as usize;
 
                                         new_rect
                                     });
@@ -260,18 +450,24 @@ impl Track {
                             let state = self.app_state.read().unwrap();
                             if state.playing {
                                 if let Some(duration) = state.duration_played() {
-                                    let millis = duration.as_millis() as f32;
-                                    if (millis as f64) > time_offset * 1000.0
-                                        && (millis as f64)
-                                            < time_offset * 1000.0
-                                                + sample.len_time().as_secs_f64() * 1000.0
-                                    {
-                                        let x = (millis * pixels_per_millis + xstart).round() + 0.5;
-
-                                        ui.painter().line_segment(
-                                            [Pos2::new(x, rect.bottom()), Pos2::new(x, rect.top())],
-                                            egui::Stroke::new(1.0, egui::Color32::GREEN),
-                                        );
+                                    if self.sample_at_time(&duration).is_some() {
+                                        if let Some(pixel) = self
+                                            .get_pixel_from_duration_sample(index, &duration, width)
+                                        {
+                                            ui.painter().line_segment(
+                                                [
+                                                    Pos2::new(
+                                                        pixel.round() + rect.left() + 0.5,
+                                                        rect.bottom(),
+                                                    ),
+                                                    Pos2::new(
+                                                        pixel.round() + rect.left() + 0.5,
+                                                        rect.top(),
+                                                    ),
+                                                ],
+                                                egui::Stroke::new(1.0, egui::Color32::GREEN),
+                                            );
+                                        }
                                     }
                                 }
                             }

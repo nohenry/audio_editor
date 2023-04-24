@@ -14,12 +14,14 @@ const VERTICIES: [f32; 8] = [
 pub struct WaveUniform {
     pub width: f32,
     pub height: f32,
-    pub samples_per_pixel: f32,
+    // pub samples_per_pixel: f32,
     pub yscale: f32,
     pub data_len: u32,
     pub increment: u32,
+    pub start: u32,
+    pub end: u32,
 
-    pub _padding: [u32; 2],
+    pub _padding: [u32; 1],
 
     pub main_color: [f32; 4],
     pub second_color: [f32; 4],

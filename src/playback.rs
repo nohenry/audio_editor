@@ -22,7 +22,6 @@ pub fn start_audio(
         .expect("no supported config?!")
         .with_max_sample_rate();
 
-
     info!("Channel Count: {}", supported_config.channels());
     info!("Sample Rate: {}", supported_config.sample_rate().0);
     info!("Buffer Size: {:?}", supported_config.buffer_size());
@@ -330,7 +329,7 @@ fn channel_router_split_input<'a>(
         (Speaker::FrontLeft, _) => output
             .chunks_exact_mut(output_channels as _)
             .zip(input[0].as_ref()[input_offset..].iter())
-            .for_each(|(o, i)| o.fill(*i)),
+            .for_each(|(o, i)| o.iter_mut().for_each(|o| *o += *i)),
         (i, o) if i >= o => {
             (0..output_channels as usize).for_each(|c| {
                 output
@@ -338,7 +337,7 @@ fn channel_router_split_input<'a>(
                     .skip(c)
                     .step_by(output_channels as usize)
                     .enumerate()
-                    .for_each(|(i, o)| *o = input[c].as_ref()[i + input_offset])
+                    .for_each(|(i, o)| *o += input[c].as_ref()[i + input_offset])
             });
         }
         (_, _) => output
@@ -346,7 +345,7 @@ fn channel_router_split_input<'a>(
             .enumerate()
             .for_each(|(i, o)| {
                 let ins = input[..input_offset].iter().map(|f| f.as_ref()[i]);
-                o[..2].iter_mut().zip(ins).for_each(|o| *o.0 = o.1);
+                o[..2].iter_mut().zip(ins).for_each(|o| *o.0 += o.1);
             }),
     }
 }

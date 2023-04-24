@@ -3,7 +3,8 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock}, time::Duration,
+    sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use bytemuck::Zeroable;
@@ -56,6 +57,8 @@ pub struct Sample {
 
     pub header: wav::Header,
     pub data: wav::BitDepth,
+
+    pub sample_rate: f64,
 
     wgpu_state: Arc<WaveViewSampleState>,
 }
@@ -131,6 +134,8 @@ impl Sample {
             header,
             data,
 
+            sample_rate: header.sampling_rate as f64 / 1000.0 / 1000.0,
+
             wgpu_state: Arc::new(WaveViewSampleState {
                 uniform_buffer,
                 uniform_bind_group,
@@ -167,7 +172,9 @@ impl Sample {
         ui: &mut egui::Ui,
         rect: egui::Rect,
         track: &Track,
-        sample_offset: usize,
+        index: usize,
+        // sample_offset: usize,
+        // cutoff_offset: usize,
     ) -> usize {
         // Require at least 1/2 pixel per sample for drawing individual samples.
         let sample_threshold = 10.0;
@@ -180,10 +187,11 @@ impl Sample {
         let sample_data = self.data.as_thirty_two_float().unwrap();
 
         // Samples
-        let sample_data_len = track.view_range.len() as usize - sample_offset;
+        // let sample_data_len = track.view_range.end - sample_offset;
 
         // Y-scale factor
-        let scale = 100.0;
+        let scale = height / 2.0 - 10.0;
+        // println!("{}", scale);
 
         let main_color = egui::Color32::from_rgb(181, 20, 9);
 
@@ -191,9 +199,13 @@ impl Sample {
         let bg_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 0);
 
         let actual_len = sample_data.len();
-        let adjusted_len = sample_data_len.min(actual_len);
-        let samples_per_pixel = adjusted_len as f32 / width;
+        // let adjusted_len = sample_data_len.min(actual_len);
 
+        let Some(range) = track.get_clip_sample_width(index) else {
+            return actual_len;
+        };
+
+        let samples_per_pixel = (range.len() as f32 / width);
         // Paint circles for individual samples if zoomed in enough
         if samples_per_pixel <= sample_point_threshold {
             ui.painter().line_segment(
@@ -203,47 +215,55 @@ impl Sample {
                 ],
                 egui::Stroke::new(1.0, egui::Color32::BLACK),
             );
-            for (i, sample) in sample_data[..sample_data_len as usize].iter().enumerate() {
-                let x = i as f32 / samples_per_pixel;
+            for (i, sample) in sample_data[range.min as usize..range.max as usize]
+                .iter()
+                .enumerate()
+            {
+                let x = (i as f32 / samples_per_pixel + rect.left());
+
                 ui.painter().line_segment(
                     [
-                        Pos2::new(x + rect.left() + 0.5, rect.center().y),
-                        Pos2::new(x + rect.left() + 0.5, rect.center().y + *sample * scale),
+                        Pos2::new(x + 0.5, rect.center().y),
+                        Pos2::new(x + 0.5, rect.center().y + *sample * scale),
                     ],
                     egui::Stroke::new(1.0, egui::Color32::BLACK),
                 );
 
                 ui.painter().circle_filled(
-                    Pos2::new(x + rect.left() + 0.5, rect.center().y + *sample * scale),
+                    Pos2::new(x + 0.5, rect.center().y + *sample * scale),
                     2.0,
                     main_color,
                 )
             }
-        } else if samples_per_pixel <= sample_threshold {
-            // Paint lines conenct each sample
-            ui.painter().line_segment(
-                [
-                    Pos2::new(rect.left(), rect.center().y + 0.5),
-                    Pos2::new(rect.right(), rect.center().y + 0.5),
-                ],
-                egui::Stroke::new(1.0, egui::Color32::BLACK),
-            );
-            let mut last = 0.0;
-            for (i, sample) in sample_data[..sample_data_len as usize].iter().enumerate() {
-                let x = i as f32 / samples_per_pixel;
-                ui.painter().line_segment(
-                    [
-                        Pos2::new(x + rect.left(), rect.center().y - last * scale),
-                        Pos2::new(x + rect.left(), rect.center().y - *sample * scale),
-                    ],
-                    egui::Stroke::new(1.0, main_color),
-                );
+        // } else if samples_per_pixel <= sample_threshold {
+        //     //Paint lines conenct each sample
+        //     ui.painter().line_segment(
+        //         [
+        //             Pos2::new(rect.left(), rect.center().y + 0.5),
+        //             Pos2::new(rect.right(), rect.center().y + 0.5),
+        //         ],
+        //         egui::Stroke::new(1.0, egui::Color32::BLACK),
+        //     );
+        //     let mut last = 0.0;
+        //     for (i, sample) in sample_data[range.min as usize..range.max as usize]
+        //         .iter()
+        //         .enumerate()
+        //     {
+        //         let x = i as f32 / samples_per_pixel;
+        //         ui.painter().line_segment(
+        //             [
+        //                 Pos2::new(x + rect.left(), rect.center().y - last * scale),
+        //                 Pos2::new(x + rect.left(), rect.center().y - *sample * scale),
+        //             ],
+        //             egui::Stroke::new(1.0, main_color),
+        //         );
 
-                last = *sample;
-            }
+        //         last = *sample;
+        //     }
         } else {
             let wave_state = self.wgpu_state.clone();
             let id = self.id;
+            // let start = track.view_range.start as u32;
 
             // Render a shader to display larger zommed-out data
             let cb = egui_wgpu::CallbackFn::new()
@@ -255,16 +275,19 @@ impl Sample {
                         &uniform,
                         0,
                         bytemuck::cast_slice(&[WaveUniform {
-                            height,
                             width,
-                            samples_per_pixel,
+                            height,
+                            // samples_per_pixel,
                             yscale: scale,
-                            data_len: adjusted_len as u32,
-                            increment: (1.0
-                                / (adjusted_len as f32 / (sample_data_len as f32 / width) / width))
-                                .round() as u32,
+                            data_len: 0 as u32,
+                            increment: 1,
+                            // increment: (1.0
+                            //     / (adjusted_len as f32 / (sample_data_len as f32 / width) / width))
+                            //     .round() as u32,
+                            start: range.min as u32,
+                            end: range.max as u32,
 
-                            _padding: [0; 2],
+                            _padding: [0; 1],
 
                             main_color: main_color.to_normalized_gamma_f32(),
                             second_color: second_color.to_normalized_gamma_f32(),

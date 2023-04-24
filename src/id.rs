@@ -31,7 +31,6 @@ pub struct IDManager {
 }
 
 impl IDManager {
-
     pub fn gen_id(&mut self) -> Id {
         self.next_id.0 += 1;
         Id(self.next_id.0 - 1)
