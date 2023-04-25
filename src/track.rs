@@ -7,6 +7,7 @@ use std::{
 use egui::Pos2;
 
 use crate::{
+    channel::{ChannelMapping, Speaker},
     sample::Sample,
     state::State,
     util::{PixelRange, SampleRange},
@@ -16,9 +17,11 @@ pub struct Track {
     pub name: String,
     pub samples: Vec<Arc<Sample>>,
     pub view_range: Range<u64>,
-    pub cached_times: Vec<u64>,
 
-    pub app_state: Arc<RwLock<State>>,
+    pub channel_mapping: ChannelMapping,
+
+    cached_times: Vec<u64>,
+    app_state: Arc<RwLock<State>>,
 }
 
 const TRACK_HEIGHT: f32 = 200.0;
@@ -27,6 +30,7 @@ impl Track {
     pub fn new(
         name: impl Into<String>,
         samples: Vec<Arc<Sample>>,
+        map_to: Speaker,
         app_state: Arc<RwLock<State>>,
     ) -> Track {
         let sample_times = samples
@@ -44,8 +48,14 @@ impl Track {
             name: name.into(),
             samples,
             app_state,
-            cached_times: sample_times,
 
+            channel_mapping: ChannelMapping::from_array_mapping(
+                [(Speaker::FrontLeft, map_to)],
+                1,
+                false,
+            ),
+
+            cached_times: sample_times,
             view_range: Duration::from_secs(0).as_micros() as u64
                 ..Duration::from_secs(20).as_micros() as u64,
         }

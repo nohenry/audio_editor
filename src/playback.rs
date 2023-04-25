@@ -1,18 +1,9 @@
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, RwLock,
-    },
-    time::Instant,
-};
+use std::sync::{atomic::Ordering, Arc, RwLock};
 
-use cpal::{
-    traits::{DeviceTrait, StreamTrait},
-    SampleFormat,
-};
+use cpal::{traits::DeviceTrait, SampleFormat};
 use tracing::{info, warn};
 
-use crate::{resampler::Resampler, state::State, track::Track};
+use crate::{resampler::Resampler, state::State, track::Track, channel::{channel_router_split_input, channel_router}};
 
 const MAX_RESAMPLING_BUFFER: usize = 8096;
 
@@ -46,10 +37,7 @@ pub fn start_audio(
         _ => 0,
     };
 
-    // let resample_buffer_size = (buffer_size as usize).min(MAX_RESAMPLING_BUFFER);
     let resample_buffer_size = MAX_RESAMPLING_BUFFER;
-
-    let mut output_buffer = [Vec::<f32>::with_capacity(resample_buffer_size)];
 
     let resamplers: Vec<_> = tracks
         .iter()
@@ -193,7 +181,6 @@ fn write_track(
     let adjusted_len = sample_data.len() / target_sample_count as usize;
 
     if let Some(Some((resampler, _))) = resampler.iter_all().nth(sample_index) {
-        // if !complete {
         let buffer = resampler.buffer().read().unwrap();
         channel_router_split_input(
             sample.header.channel_count,
@@ -201,212 +188,18 @@ fn write_track(
             &buffer,
             sample_data,
             *current_index,
+            &track.channel_mapping,
         );
-        // }
-
-        *absolute_index += adjusted_len;
-        *current_index += adjusted_len;
+    } else {
+        channel_router(
+            sample.header.channel_count,
+            target_sample_count,
+            &data,
+            sample_data,
+            *current_index,
+        );
     }
-    // let resampler =
-    // if let Some((resampler, buffer, index)) = &mut resamplers[sample_index] {
-    //     if *index >= data.len() {
-    //         // *absolute_index += adjusted_len;
-    //         // *output_index = 0;
-    //         absolute_index.fetch_add(adjusted_len, Ordering::SeqCst);
-    //         output_index.store(0, Ordering::SeqCst);
-
-    //         return;
-    //     } else if *index + resampler.input_frames_next() >= data.len() {
-    //         let data = vec![data[*index..].to_vec(), vec![0.0f32; data.len() - *index]].concat();
-
-    //         let oindex = output_index.load(Ordering::Acquire);
-    //         *index += resample(
-    //             &data,
-    //             resampling_buffer,
-    //             buffer,
-    //             0,
-    //             sample.header.channel_count,
-    //             oindex,
-    //             sample_data.len() / (target_sample_count as usize),
-    //             resampler,
-    //         );
-
-    //         channel_router_split_input(
-    //             sample.header.channel_count,
-    //             target_sample_count,
-    //             &buffer,
-    //             sample_data,
-    //             oindex,
-    //         );
-
-    //         // *absolute_index += adjusted_len;
-    //         // *output_index += adjusted_len;
-    //         absolute_index.fetch_add(adjusted_len, Ordering::SeqCst);
-    //         output_index.fetch_add(adjusted_len, Ordering::Release);
-
-    //         return;
-    //     }
-
-    //     let oindex = output_index.load(Ordering::Acquire);
-    //     *index += resample(
-    //         &data,
-    //         resampling_buffer,
-    //         buffer,
-    //         *index,
-    //         sample.header.channel_count,
-    //         oindex,
-    //         sample_data.len() / (target_sample_count as usize),
-    //         resampler,
-    //     );
-
-    //     channel_router_split_input(
-    //         sample.header.channel_count,
-    //         target_sample_count,
-    //         &buffer,
-    //         sample_data,
-    //         oindex,
-    //     );
-
-    //     absolute_index.fetch_add(adjusted_len, Ordering::SeqCst);
-    //     output_index.fetch_add(adjusted_len, Ordering::Release);
-    // }
+    *absolute_index += adjusted_len;
+    *current_index += adjusted_len;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-enum Speaker {
-    FrontLeft = 0,
-    FrontRight = 1,
-    Center = 2,
-    Subwoofer = 3,
-    SideLeft = 4,
-    SideRight = 5,
-    RearLeft = 6,
-    RearRight = 7,
-    HeightLeft1 = 8,
-    HeightRight1 = 9,
-    HeightLeft2 = 10,
-    HeightRight2 = 11,
-}
-
-impl Speaker {
-    pub const fn as_u8(&self) -> u8 {
-        *self as u8
-    }
-
-    pub const fn len(&self) -> u16 {
-        *self as u16 + 1
-    }
-
-    pub const fn ind(self) -> u16 {
-        self as u16 + 1
-    }
-
-    pub const fn from_ind(ind: u16) -> Speaker {
-        match ind - 1 {
-            0 => Speaker::FrontLeft,
-            1 => Speaker::FrontRight,
-            2 => Speaker::Center,
-            3 => Speaker::Subwoofer,
-            4 => Speaker::SideLeft,
-            5 => Speaker::SideRight,
-            6 => Speaker::RearLeft,
-            7 => Speaker::RearRight,
-            8 => Speaker::HeightLeft1,
-            9 => Speaker::HeightRight1,
-            10 => Speaker::HeightLeft2,
-            11 => Speaker::HeightRight2,
-            _ => panic!("Unsupported speaker index!"),
-        }
-    }
-}
-
-impl Into<u8> for Speaker {
-    fn into(self) -> u8 {
-        self as u8
-    }
-}
-
-impl From<u8> for Speaker {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => Speaker::FrontLeft,
-            1 => Speaker::FrontRight,
-            2 => Speaker::Center,
-            3 => Speaker::Subwoofer,
-            4 => Speaker::SideLeft,
-            5 => Speaker::SideRight,
-            6 => Speaker::RearLeft,
-            7 => Speaker::RearRight,
-            8 => Speaker::HeightLeft1,
-            9 => Speaker::HeightRight1,
-            10 => Speaker::HeightLeft2,
-            11 => Speaker::HeightRight2,
-            _ => panic!("Unsupported speaker index!"),
-        }
-    }
-}
-
-fn channel_router<'a>(
-    input_channels: u16,
-    output_channels: u16,
-    input: &[f32],
-    output: &mut [f32],
-) {
-    match (
-        Speaker::from_ind(input_channels),
-        Speaker::from_ind(output_channels),
-    ) {
-        (Speaker::FrontLeft, _) => output
-            .chunks_exact_mut(output_channels as _)
-            .zip(input.iter())
-            .for_each(|(o, i)| o.fill(*i)),
-        (i, o) if i >= o => output.copy_from_slice(&input[..output_channels as usize]),
-        (_, _) => output
-            .chunks_exact_mut(output_channels as _)
-            .zip(input.chunks(input_channels as _))
-            .for_each(|(o, i)| {
-                o[..2].copy_from_slice(&i[..2]);
-                o[2..4.min(input_channels as usize)]
-                    .copy_from_slice(&i[2..4.min(input_channels as usize)]);
-                o[4..]
-                    .chunks_exact_mut(2)
-                    .for_each(|o| o.copy_from_slice(&i[..2]));
-            }),
-    }
-}
-
-fn channel_router_split_input<'a>(
-    input_channels: u16,
-    output_channels: u16,
-    input: &[impl AsRef<[f32]>],
-    output: &mut [f32],
-    input_offset: usize,
-) {
-    match (
-        Speaker::from_ind(input_channels),
-        Speaker::from_ind(output_channels),
-    ) {
-        (Speaker::FrontLeft, _) => output
-            .chunks_exact_mut(output_channels as _)
-            .zip(input[0].as_ref()[input_offset..].iter())
-            .for_each(|(o, i)| o.iter_mut().for_each(|o| *o += *i)),
-        (i, o) if i >= o => {
-            (0..output_channels as usize).for_each(|c| {
-                output
-                    .iter_mut()
-                    .skip(c)
-                    .step_by(output_channels as usize)
-                    .enumerate()
-                    .for_each(|(i, o)| *o += input[c].as_ref()[i + input_offset])
-            });
-        }
-        (_, _) => output
-            .chunks_exact_mut(output_channels as _)
-            .enumerate()
-            .for_each(|(i, o)| {
-                let ins = input[..input_offset].iter().map(|f| f.as_ref()[i]);
-                o[..2].iter_mut().zip(ins).for_each(|o| *o.0 += o.1);
-            }),
-    }
-}

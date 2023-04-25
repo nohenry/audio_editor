@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use channel::Speaker;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use id::Id;
 use playback::start_audio;
@@ -12,14 +13,15 @@ use wave_view::WaveViewState;
 
 use crate::state::State;
 
+mod channel;
 mod id;
 mod playback;
+mod resampler;
 mod sample;
 mod state;
 mod track;
 mod util;
 mod wave_view;
-mod resampler;
 
 fn load_channel(n: u32, state: &Arc<RwLock<State>>) -> Arc<RwLock<Track>> {
     let sample = Arc::new(
@@ -34,6 +36,7 @@ fn load_channel(n: u32, state: &Arc<RwLock<State>>) -> Arc<RwLock<Track>> {
     let track = Arc::new(RwLock::new(Track::new(
         format!("Track c{}", n),
         vec![sample],
+        Speaker::from(n as u16),
         state.clone(),
     )));
 
@@ -55,8 +58,8 @@ fn main() {
     let device = host
         .output_devices()
         .expect("unable to iterate output devices")
-        // .find(|device| device.name().unwrap() == "Speakers (Realtek(R) Audio)")
-        .find(|device| device.name().unwrap() == "Speakers (Focusrite USB Audio)")
+        .find(|device| device.name().unwrap() == "Speakers (Realtek(R) Audio)")
+        // .find(|device| device.name().unwrap() == "Speakers (Focusrite USB Audio)")
         .or_else(|| host.default_output_device())
         .expect("Unable to find any output devices!");
 
