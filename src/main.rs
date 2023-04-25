@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use cpal::traits::HostTrait;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use id::Id;
 use playback::start_audio;
 use sample::WaveViewSampleState;
@@ -19,15 +19,46 @@ mod state;
 mod track;
 mod util;
 mod wave_view;
+mod resampler;
+
+fn load_channel(n: u32, state: &Arc<RwLock<State>>) -> Arc<RwLock<Track>> {
+    let sample = Arc::new(
+        sample::Sample::load_from_file(
+            format!("res/sounds/channel{}.wav", n),
+            Some(format!("Channel {}", n)),
+            &state,
+        )
+        .unwrap(),
+    );
+
+    let track = Arc::new(RwLock::new(Track::new(
+        format!("Track c{}", n),
+        vec![sample],
+        state.clone(),
+    )));
+
+    track
+}
 
 fn main() {
     // Log to stdout (if you run with `RUST_LOG=debug`).
     tracing_subscriber::fmt::init();
 
     let host = cpal::default_host();
+    for device in host.output_devices().unwrap() {
+        println!("{:?}", device.name());
+        for config in device.supported_output_configs().unwrap() {
+            println!("    {:?}", config);
+        }
+    }
+
     let device = host
-        .default_output_device()
-        .expect("no output device available");
+        .output_devices()
+        .expect("unable to iterate output devices")
+        // .find(|device| device.name().unwrap() == "Speakers (Realtek(R) Audio)")
+        .find(|device| device.name().unwrap() == "Speakers (Focusrite USB Audio)")
+        .or_else(|| host.default_output_device())
+        .expect("Unable to find any output devices!");
 
     let options = eframe::NativeOptions {
         initial_window_size: Some(egui::vec2(1920.0, 1080.0)),
@@ -62,59 +93,29 @@ fn main() {
 
                 wave_view_state,
             }));
-            let track_state = state.clone();
 
             // Load test sample
-            let sample = Arc::new(
-                sample::Sample::load_from_file("sample_short.wav", Some("Sample 1"), &state)
-                    .unwrap(),
-            );
-            let track_sample = sample.clone();
+            let tracks: Vec<_> = (1..=8).map(|cn| load_channel(cn, &state)).collect();
 
-            let sample2 = Arc::new(
-                sample::Sample::load_from_file("sample12.wav", Some("Sample 2"), &state).unwrap(),
-            );
-            let track_sample2 = sample2.clone();
+            let stream = start_audio(device, tracks.clone(), state.clone());
 
-            let sample3 = Arc::new(
-                sample::Sample::load_from_file("sine440.wav", Some("Sample 2"), &state).unwrap(),
-            );
-            let track_sample3 = sample3.clone();
-
-            let track = Arc::new(RwLock::new(Track::new(
-                "Track",
-                vec![track_sample.clone(), track_sample3.clone()],
-                track_state.clone(),
-            )));
-
-            let track2 = Arc::new(RwLock::new(Track::new(
-                "Track2",
-                vec![track_sample3],
-                track_state,
-            )));
-
-            let stream = start_audio(device, vec![track.clone(), track2.clone()], state);
-
-            Box::new(Application::new(
-                cc,
-                vec![track.clone(), track2.clone()],
-                vec![stream],
-            ))
+            Box::new(Application::new(cc, tracks, state, vec![stream]))
         }),
     )
     .unwrap();
 }
 
-#[derive(Default)]
 struct Application {
-    _streams: Vec<cpal::Stream>,
+    streams: Vec<cpal::Stream>,
     tracks: Vec<Arc<RwLock<Track>>>,
+    state: Arc<RwLock<State>>,
 }
 
 impl Application {
     fn new(
         cc: &eframe::CreationContext<'_>,
         tracks: Vec<Arc<RwLock<Track>>>,
+        state: Arc<RwLock<State>>,
         streams: Vec<cpal::Stream>,
     ) -> Self {
         // Set open sans regular as the default font family
@@ -142,16 +143,45 @@ impl Application {
 
         Application {
             tracks,
-            _streams: streams,
+            state,
+            streams,
         }
+    }
+
+    pub fn play(&self) {
+        let mut state = self.state.write().unwrap();
+        state.playing = true;
+
+        self.streams.iter().for_each(|s| s.play().unwrap());
+    }
+
+    pub fn pause(&self) {
+        let mut state = self.state.write().unwrap();
+        state.playing = false;
+
+        self.streams.iter().for_each(|s| s.pause().unwrap());
+    }
+
+    pub fn stop(&self) {
+        let mut state = self.state.write().unwrap();
+        state.playing = false;
+
+        self.streams.iter().for_each(|s| s.pause().unwrap());
     }
 }
 
 impl eframe::App for Application {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("editor-main-heading").show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                 ui.heading("Audio Editor");
+
+                if ui.button("Play").clicked() {
+                    self.play()
+                }
+                if ui.button("Pause").clicked() {
+                    self.pause()
+                }
             });
         });
 

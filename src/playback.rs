@@ -1,12 +1,20 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, RwLock,
+    },
+    time::Instant,
+};
 
 use cpal::{
     traits::{DeviceTrait, StreamTrait},
     SampleFormat,
 };
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::{state::State, track::Track};
+use crate::{resampler::Resampler, state::State, track::Track};
+
+const MAX_RESAMPLING_BUFFER: usize = 8096;
 
 pub fn start_audio(
     device: cpal::Device,
@@ -16,7 +24,7 @@ pub fn start_audio(
     let mut supported_configs_range = device
         .supported_output_configs()
         .expect("error while querying configs");
-    supported_configs_range.next();
+    // supported_configs_range.next();
     let supported_config = supported_configs_range
         .next()
         .expect("no supported config?!")
@@ -30,22 +38,24 @@ pub fn start_audio(
     let target_sample_rate = supported_config.sample_rate();
     let target_sample_count = supported_config.channels();
 
-    let mut absolute_index = 0;
-
-    let mut output_index = vec![0; tracks.len()];
+    // (current_index, absolute_index)
+    let mut output_indicies = vec![(0, 0); tracks.len()];
 
     let buffer_size = match supported_config.buffer_size() {
         cpal::SupportedBufferSize::Range { max, .. } => *max,
         _ => 0,
     };
 
-    let mut output_buffer = [Vec::<f32>::with_capacity(buffer_size as _)];
+    // let resample_buffer_size = (buffer_size as usize).min(MAX_RESAMPLING_BUFFER);
+    let resample_buffer_size = MAX_RESAMPLING_BUFFER;
 
-    let mut resamplers: Vec<Vec<_>> = tracks
+    let mut output_buffer = [Vec::<f32>::with_capacity(resample_buffer_size)];
+
+    let resamplers: Vec<_> = tracks
         .iter()
         .map(|track| {
             let track = track.read().unwrap();
-            track
+            let track: Vec<_> = track
                 .samples
                 .iter()
                 .map(|sample| {
@@ -53,7 +63,7 @@ pub fn start_audio(
                         let params = rubato::InterpolationParameters {
                             sinc_len: 256,
                             f_cutoff: 0.95,
-                            interpolation: rubato::InterpolationType::Linear,
+                            interpolation: rubato::InterpolationType::Cubic,
                             oversampling_factor: 256,
                             window: rubato::WindowFunction::Blackman,
                         };
@@ -62,7 +72,7 @@ pub fn start_audio(
                             target_sample_rate.0 as f64 / sample.header.sampling_rate as f64,
                             2.0,
                             params,
-                            buffer_size as usize / 2,
+                            resample_buffer_size,
                             sample.header.channel_count as _,
                         )
                         .unwrap();
@@ -73,14 +83,21 @@ pub fn start_audio(
                         ];
                         let index = 0usize;
 
-                        Some((resampler, buffer, index))
+                        Some((sample.clone(), resampler, buffer, index))
                     } else {
                         None
                     }
                 })
-                .collect()
+                .collect();
+
+            (
+                Resampler::from(track),
+                [Vec::<f32>::with_capacity(resample_buffer_size)],
+            )
         })
         .collect();
+
+    let thread_resamplers = resamplers.clone();
 
     let write_data_f32 = move |sample_data: &mut [f32], info: &cpal::OutputCallbackInfo| {
         {
@@ -91,20 +108,19 @@ pub fn start_audio(
 
         sample_data.fill(0.0);
 
-        for ((track, output), resampler) in tracks
+        for ((track, indicies), resampler) in tracks
             .iter()
-            .zip(output_index.iter_mut())
-            .zip(resamplers.iter_mut())
+            .zip(output_indicies.iter_mut())
+            .zip(resamplers.iter())
         {
             write_track(
                 track,
-                &mut absolute_index,
-                output,
+                &mut indicies.0,
+                &mut indicies.1,
                 target_sample_count,
                 target_sample_rate.0 as u64,
                 sample_data,
-                resampler,
-                &mut output_buffer,
+                &resampler.0,
             )
         }
 
@@ -130,85 +146,130 @@ pub fn start_audio(
     }
     .unwrap();
 
-    stream.play().unwrap();
+    // spawn one thread per track for resampling
+    for (resampler, mut output_buffer) in thread_resamplers {
+        std::thread::spawn(move || 'outer: loop {
+            for (resampler, complete) in resampler.iter() {
+                if complete.load(Ordering::SeqCst) {
+                    continue;
+                }
+
+                if resampler.resample(&mut output_buffer) {
+                    info!(
+                        "{} - complete - {}",
+                        resampler.sample().name,
+                        resampler.buffer().read().unwrap()[0].len()
+                    );
+                    complete.store(true, Ordering::SeqCst);
+
+                    break 'outer;
+                }
+
+                break;
+            }
+        });
+    }
 
     stream
 }
 
 fn write_track(
     track: &Arc<RwLock<Track>>,
+    current_index: &mut usize,
     absolute_index: &mut usize,
-    output_index: &mut usize,
     target_sample_count: u16,
     target_sample_rate: u64,
     sample_data: &mut [f32],
-    resamplers: &mut Vec<Option<(impl rubato::Resampler<f32>, Vec<Vec<f32>>, usize)>>,
-    resampling_buffer: &mut [Vec<f32>],
+    resampler: &Resampler,
 ) {
     let track = track.read().unwrap();
-    let Some((sample, sample_index)) = track.sample_at_sample_index(*absolute_index as usize, target_sample_rate as f64) else {
+    let Some((sample, sample_index)) = track.sample_at_sample_index(*absolute_index, target_sample_rate as f64) else {
+        warn!("Sample at index {} not found! (rate: {})", *absolute_index, target_sample_rate);
         return;
     };
 
     let data = sample.data.as_thirty_two_float().unwrap();
 
     let adjusted_len = sample_data.len() / target_sample_count as usize;
-    if let Some((resampler, buffer, index)) = &mut resamplers[sample_index] {
-        if *index >= data.len() {
-            *absolute_index += adjusted_len;
-            *output_index = 0;
 
-            return;
-        } else if *index + resampler.input_frames_next() >= data.len() {
-            let data = vec![data[*index..].to_vec(), vec![0.0f32; data.len() - *index]].concat();
-
-            *index += resample(
-                &data,
-                resampling_buffer,
-                buffer,
-                0,
-                sample.header.channel_count,
-                *output_index,
-                sample_data.len() / (target_sample_count as usize),
-                resampler,
-            );
-
-            channel_router_split_input(
-                sample.header.channel_count,
-                target_sample_count,
-                &buffer,
-                sample_data,
-                *output_index,
-            );
-
-            *absolute_index += adjusted_len;
-            *output_index += adjusted_len;
-
-            return;
-        }
-
-        *index += resample(
-            &data,
-            resampling_buffer,
-            buffer,
-            *index,
-            sample.header.channel_count,
-            *output_index,
-            sample_data.len() / (target_sample_count as usize),
-            resampler,
-        );
-
+    if let Some(Some((resampler, _))) = resampler.iter_all().nth(sample_index) {
+        // if !complete {
+        let buffer = resampler.buffer().read().unwrap();
         channel_router_split_input(
             sample.header.channel_count,
             target_sample_count,
             &buffer,
             sample_data,
-            *output_index,
+            *current_index,
         );
+        // }
 
         *absolute_index += adjusted_len;
-        *output_index += adjusted_len;
+        *current_index += adjusted_len;
     }
+    // let resampler =
+    // if let Some((resampler, buffer, index)) = &mut resamplers[sample_index] {
+    //     if *index >= data.len() {
+    //         // *absolute_index += adjusted_len;
+    //         // *output_index = 0;
+    //         absolute_index.fetch_add(adjusted_len, Ordering::SeqCst);
+    //         output_index.store(0, Ordering::SeqCst);
+
+    //         return;
+    //     } else if *index + resampler.input_frames_next() >= data.len() {
+    //         let data = vec![data[*index..].to_vec(), vec![0.0f32; data.len() - *index]].concat();
+
+    //         let oindex = output_index.load(Ordering::Acquire);
+    //         *index += resample(
+    //             &data,
+    //             resampling_buffer,
+    //             buffer,
+    //             0,
+    //             sample.header.channel_count,
+    //             oindex,
+    //             sample_data.len() / (target_sample_count as usize),
+    //             resampler,
+    //         );
+
+    //         channel_router_split_input(
+    //             sample.header.channel_count,
+    //             target_sample_count,
+    //             &buffer,
+    //             sample_data,
+    //             oindex,
+    //         );
+
+    //         // *absolute_index += adjusted_len;
+    //         // *output_index += adjusted_len;
+    //         absolute_index.fetch_add(adjusted_len, Ordering::SeqCst);
+    //         output_index.fetch_add(adjusted_len, Ordering::Release);
+
+    //         return;
+    //     }
+
+    //     let oindex = output_index.load(Ordering::Acquire);
+    //     *index += resample(
+    //         &data,
+    //         resampling_buffer,
+    //         buffer,
+    //         *index,
+    //         sample.header.channel_count,
+    //         oindex,
+    //         sample_data.len() / (target_sample_count as usize),
+    //         resampler,
+    //     );
+
+    //     channel_router_split_input(
+    //         sample.header.channel_count,
+    //         target_sample_count,
+    //         &buffer,
+    //         sample_data,
+    //         oindex,
+    //     );
+
+    //     absolute_index.fetch_add(adjusted_len, Ordering::SeqCst);
+    //     output_index.fetch_add(adjusted_len, Ordering::Release);
+    // }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -347,50 +408,5 @@ fn channel_router_split_input<'a>(
                 let ins = input[..input_offset].iter().map(|f| f.as_ref()[i]);
                 o[..2].iter_mut().zip(ins).for_each(|o| *o.0 += o.1);
             }),
-    }
-}
-
-fn strip_samples_iter(data: &[f32], channels: usize) -> Vec<impl Iterator<Item = f32> + '_> {
-    (0..channels)
-        .map(|c| data.iter().copied().skip(c).step_by(channels))
-        .collect()
-}
-
-fn strip_samples(data: &[f32], channels: usize) -> Vec<Vec<f32>> {
-    (0..channels)
-        .map(|c| data.iter().copied().skip(c).step_by(channels).collect())
-        .collect()
-}
-
-fn resample(
-    data: &[f32],
-    resampling_buffer: &mut [Vec<f32>],
-    output_buffer: &mut [Vec<f32>],
-    input_offset: usize,
-    input_channels: u16,
-    output_offset: usize,
-    output_len: usize,
-    resampler: &mut impl rubato::Resampler<f32>,
-) -> usize {
-    if output_buffer[0].len() > output_offset && output_len < output_buffer[0].len() - output_offset
-    {
-        0
-    } else {
-        // Only resample if we've used up the output buffer
-        let len = resampler.input_frames_next();
-        let sample_channels = strip_samples(
-            &data[input_offset..input_offset + len],
-            input_channels as usize,
-        );
-
-        resampler
-            .process_into_buffer(&sample_channels, resampling_buffer, None)
-            .unwrap();
-
-        for i in 0..input_channels as usize {
-            output_buffer[i].extend_from_slice(&resampling_buffer[i][..]);
-        }
-
-        len
     }
 }

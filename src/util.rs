@@ -21,3 +21,15 @@ impl SampleRange {
         self.max - self.min
     }
 }
+
+pub fn strip_samples_iter(data: &[f32], channels: usize) -> Vec<impl Iterator<Item = f32> + '_> {
+    (0..channels)
+        .map(|c| data.iter().copied().skip(c).step_by(channels))
+        .collect()
+}
+
+pub fn strip_samples(data: &[f32], channels: usize) -> Vec<Vec<f32>> {
+    (0..channels)
+        .map(|c| data.iter().copied().skip(c).step_by(channels).collect())
+        .collect()
+}
