@@ -1,11 +1,19 @@
 use std::sync::{atomic::Ordering, Arc, RwLock};
 
-use cpal::{traits::DeviceTrait, SampleFormat};
+use cpal::{
+    traits::{DeviceTrait, StreamTrait},
+    SampleFormat,
+};
 use tracing::{info, warn};
 
-use crate::{resampler::Resampler, state::State, track::Track, channel::{channel_router_split_input, channel_router}};
+use crate::{
+    channel::{channel_router, channel_router_split_input},
+    resampler::Resampler,
+    state::State,
+    track::Track,
+};
 
-const MAX_RESAMPLING_BUFFER: usize = 8096;
+const MAX_RESAMPLING_BUFFER: usize = 16192;
 
 pub fn start_audio(
     device: cpal::Device,
@@ -15,7 +23,8 @@ pub fn start_audio(
     let mut supported_configs_range = device
         .supported_output_configs()
         .expect("error while querying configs");
-    // supported_configs_range.next();
+    supported_configs_range.next();
+    supported_configs_range.next();
     let supported_config = supported_configs_range
         .next()
         .expect("no supported config?!")
@@ -29,7 +38,7 @@ pub fn start_audio(
     let target_sample_rate = supported_config.sample_rate();
     let target_sample_count = supported_config.channels();
 
-    // (current_index, absolute_index)
+    // indicies in the form of (current_index, absolute_index)
     let mut output_indicies = vec![(0, 0); tracks.len()];
 
     let buffer_size = match supported_config.buffer_size() {
@@ -37,7 +46,7 @@ pub fn start_audio(
         _ => 0,
     };
 
-    let resample_buffer_size = MAX_RESAMPLING_BUFFER;
+    let resample_buffer_size = (buffer_size as usize).min(MAX_RESAMPLING_BUFFER);
 
     let resamplers: Vec<_> = tracks
         .iter()
@@ -87,6 +96,30 @@ pub fn start_audio(
 
     let thread_resamplers = resamplers.clone();
 
+    // spawn one thread per track for resampling
+    for (resampler, mut output_buffer) in thread_resamplers {
+        std::thread::spawn(move || 'outer: loop {
+            for (resampler, complete) in resampler.iter() {
+                if complete.load(Ordering::SeqCst) {
+                    continue;
+                }
+
+                if resampler.resample(&mut output_buffer) {
+                    info!(
+                        "{} - complete - {}",
+                        resampler.sample().name,
+                        resampler.buffer().read().unwrap()[0].len()
+                    );
+                    complete.store(true, Ordering::SeqCst);
+
+                    break 'outer;
+                }
+
+                break;
+            }
+        });
+    }
+
     let write_data_f32 = move |sample_data: &mut [f32], info: &cpal::OutputCallbackInfo| {
         {
             let mut state = state.write().unwrap();
@@ -134,29 +167,7 @@ pub fn start_audio(
     }
     .unwrap();
 
-    // spawn one thread per track for resampling
-    for (resampler, mut output_buffer) in thread_resamplers {
-        std::thread::spawn(move || 'outer: loop {
-            for (resampler, complete) in resampler.iter() {
-                if complete.load(Ordering::SeqCst) {
-                    continue;
-                }
-
-                if resampler.resample(&mut output_buffer) {
-                    info!(
-                        "{} - complete - {}",
-                        resampler.sample().name,
-                        resampler.buffer().read().unwrap()[0].len()
-                    );
-                    complete.store(true, Ordering::SeqCst);
-
-                    break 'outer;
-                }
-
-                break;
-            }
-        });
-    }
+    stream.pause().unwrap();
 
     stream
 }
@@ -188,7 +199,8 @@ fn write_track(
             &buffer,
             sample_data,
             *current_index,
-            &track.channel_mapping,
+            // &track.channel_mapping,
+            &None,
         );
     } else {
         channel_router(
@@ -202,4 +214,3 @@ fn write_track(
     *absolute_index += adjusted_len;
     *current_index += adjusted_len;
 }
-

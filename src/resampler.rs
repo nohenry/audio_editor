@@ -147,13 +147,3 @@ impl From<Vec<Option<(Arc<Sample>, SincFixedOut<f32>, Vec<Vec<f32>>, usize)>>> f
         ))
     }
 }
-
-// impl Resampler {
-//     pub fn read(&self) -> RwLockReadGuard<Vec<ResamplerInner>> {
-//         self.0.read().unwrap()
-//     }
-
-//     pub fn write(&self) -> RwLockWriteGuard<Vec<ResamplerInner>> {
-//         self.0.write().unwrap()
-//     }
-// }

@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use channel::Speaker;
+use channel::Speakers;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use id::Id;
 use playback::start_audio;
@@ -36,7 +36,7 @@ fn load_channel(n: u32, state: &Arc<RwLock<State>>) -> Arc<RwLock<Track>> {
     let track = Arc::new(RwLock::new(Track::new(
         format!("Track c{}", n),
         vec![sample],
-        Speaker::from(n as u16),
+        Speakers::from(n as u16 - 1),
         state.clone(),
     )));
 
@@ -98,7 +98,7 @@ fn main() {
             }));
 
             // Load test sample
-            let tracks: Vec<_> = (1..=8).map(|cn| load_channel(cn, &state)).collect();
+            let tracks: Vec<_> = (1..=2).map(|cn| load_channel(cn, &state)).collect();
 
             let stream = start_audio(device, tracks.clone(), state.clone());
 
