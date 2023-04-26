@@ -67,10 +67,10 @@ impl Track {
             if duration.as_millis() > offset
                 && duration.as_millis() < offset + x.len_time().as_millis()
             {
-                return true;
+                true
             } else {
                 offset += x.len_time().as_millis();
-                return false;
+                false
             }
         })
     }
@@ -290,7 +290,7 @@ impl Track {
 
                     ui.separator();
 
-                    let (rect, bg_response) = ui.allocate_exact_size(
+                    let (rect, _bg_response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), ui.available_height()),
                         egui::Sense::drag(),
                     );
@@ -383,7 +383,6 @@ impl Track {
 
                     ui.allocate_ui_at_rect(rect, |ui| {
                         let mut offset = 0;
-                        let mut time_offset = 0.0;
 
                         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
@@ -421,7 +420,8 @@ impl Track {
                                     },
                                 );
 
-                                let frame_response = egui::Frame::none()
+                                
+                                egui::Frame::none()
                                     .fill(egui::Color32::from_black_alpha(50))
                                     .outer_margin(egui::Margin {
                                         bottom: 5.0,
@@ -446,11 +446,10 @@ impl Track {
                                         ui.allocate_rect(new_rect, egui::Sense::drag());
 
                                         sample.display(ui, new_rect, self, index);
-                                        offset += sample.len() as usize;
+                                        offset += sample.len();
 
                                         new_rect
-                                    });
-                                frame_response
+                                    })
                             });
 
                             let rect = sample_response.inner.inner;
@@ -491,8 +490,6 @@ impl Track {
                                     egui::Stroke::new(1.0, egui::Color32::RED),
                                 );
                             }
-
-                            time_offset += sample.len_time().as_secs_f64();
                         }
                     });
                 })

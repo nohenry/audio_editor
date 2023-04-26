@@ -162,7 +162,7 @@ impl ChannelMapping {
     }
 }
 
-pub fn channel_router<'a>(
+pub fn channel_router(
     input_channels: u16,
     output_channels: u16,
     input: &[f32],
@@ -194,7 +194,7 @@ pub fn channel_router<'a>(
     }
 }
 
-pub fn channel_router_split_input<'a>(
+pub fn channel_router_split_input(
     input_channels: u16,
     output_channels: u16,
     input: &[impl AsRef<[f32]>],
@@ -204,7 +204,7 @@ pub fn channel_router_split_input<'a>(
 ) {
     let default_mapping = ChannelMapping::default(input_channels, output_channels);
     let available = Speakers::all_to(output_channels);
-    let channel_mapping = channel_mapping.as_ref().unwrap_or_else(|| &default_mapping);
+    let channel_mapping = channel_mapping.as_ref().unwrap_or(&default_mapping);
 
     for (input_index, channel) in input.iter().enumerate() {
         let input = &channel.as_ref()[input_offset..];

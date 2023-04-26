@@ -79,7 +79,7 @@ impl Sample {
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("wave_view_aduio_buffer"),
-                    contents: bytemuck::cast_slice(&data.as_thirty_two_float().unwrap()),
+                    contents: bytemuck::cast_slice(data.as_thirty_two_float().unwrap()),
                     usage: wgpu::BufferUsages::STORAGE,
                 });
 
@@ -177,7 +177,7 @@ impl Sample {
         // cutoff_offset: usize,
     ) -> usize {
         // Require at least 1/2 pixel per sample for drawing individual samples.
-        let sample_threshold = 10.0;
+        let _sample_threshold = 10.0;
         // Require at least 3 pixels per sample for drawing the draggable points.
         let sample_point_threshold = 1.0 / 3.0;
 
@@ -205,7 +205,7 @@ impl Sample {
             return actual_len;
         };
 
-        let samples_per_pixel = (range.len() as f32 / width);
+        let samples_per_pixel = range.len() as f32 / width;
         // Paint circles for individual samples if zoomed in enough
         if samples_per_pixel <= sample_point_threshold {
             ui.painter().line_segment(
@@ -219,7 +219,7 @@ impl Sample {
                 .iter()
                 .enumerate()
             {
-                let x = (i as f32 / samples_per_pixel + rect.left());
+                let x = i as f32 / samples_per_pixel + rect.left();
 
                 ui.painter().line_segment(
                     [
@@ -272,14 +272,14 @@ impl Sample {
                     let uniform = &uniform.uniform_buffer;
 
                     queue.write_buffer(
-                        &uniform,
+                        uniform,
                         0,
                         bytemuck::cast_slice(&[WaveUniform {
                             width,
                             height,
                             // samples_per_pixel,
                             yscale: scale,
-                            data_len: 0 as u32,
+                            data_len: 0_u32,
                             increment: 1,
                             // increment: (1.0
                             //     / (adjusted_len as f32 / (sample_data_len as f32 / width) / width))

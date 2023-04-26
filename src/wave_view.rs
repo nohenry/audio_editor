@@ -78,7 +78,7 @@ impl WaveViewState {
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wave_view_vertex_buffer"),
-            contents: &bytemuck::cast_slice(&VERTICIES),
+            contents: bytemuck::cast_slice(&VERTICIES),
             usage: wgpu::BufferUsages::VERTEX,
         });
 

@@ -206,7 +206,7 @@ fn write_track(
         channel_router(
             sample.header.channel_count,
             target_sample_count,
-            &data,
+            data,
             sample_data,
             *current_index,
         );

@@ -26,15 +26,15 @@ mod wave_view;
 fn load_channel(n: u32, state: &Arc<RwLock<State>>) -> Arc<RwLock<Track>> {
     let sample = Arc::new(
         sample::Sample::load_from_file(
-            format!("res/sounds/channel{}.wav", n),
-            Some(format!("Channel {}", n)),
-            &state,
+            format!("res/sounds/channel{n}.wav"),
+            Some(format!("Channel {n}")),
+            state,
         )
         .unwrap(),
     );
 
     let track = Arc::new(RwLock::new(Track::new(
-        format!("Track c{}", n),
+        format!("Track c{n}"),
         vec![sample],
         Speakers::from(n as u16 - 1),
         state.clone(),
@@ -51,7 +51,7 @@ fn main() {
     for device in host.output_devices().unwrap() {
         println!("{:?}", device.name());
         for config in device.supported_output_configs().unwrap() {
-            println!("    {:?}", config);
+            println!("    {config:?}");
         }
     }
 
@@ -77,7 +77,7 @@ fn main() {
 
             let wgpu_render_state = cc.wgpu_render_state.as_ref().unwrap();
 
-            let wave_view_state = Arc::new(WaveViewState::new(&wgpu_render_state));
+            let wave_view_state = Arc::new(WaveViewState::new(wgpu_render_state));
 
             wgpu_render_state
                 .renderer

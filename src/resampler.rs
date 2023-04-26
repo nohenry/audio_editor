@@ -121,7 +121,7 @@ impl Resampler {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &(ResamplerInner, AtomicBool)> + '_ {
-        self.0.iter().filter_map(|v| v.as_ref().map(|v| v))
+        self.0.iter().filter_map(|v| v.as_ref())
     }
 }
 
