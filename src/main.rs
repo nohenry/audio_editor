@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::Path,
     sync::{Arc, RwLock},
 };
 
@@ -33,10 +34,55 @@ fn load_channel(n: u32, state: &Arc<RwLock<State>>) -> Arc<RwLock<Track>> {
         .unwrap(),
     );
 
+    let sample2 = Arc::new(
+        sample::Sample::load_from_file(
+            format!("res/sounds/channel{n}.wav"),
+            Some(format!("Channel {n} -- 2")),
+            state,
+        )
+        .unwrap(),
+    );
+
     let track = Arc::new(RwLock::new(Track::new(
         format!("Track c{n}"),
-        vec![sample],
+        vec![sample, sample2],
         Speakers::from(n as u16 - 1),
+        state.clone(),
+    )));
+
+    track
+}
+
+fn load_channel_path(
+    path: impl AsRef<Path>,
+    to: Speakers,
+    state: &Arc<RwLock<State>>,
+) -> Arc<RwLock<Track>> {
+    let sample = Arc::new(
+        sample::Sample::load_from_file(
+            // format!("res/sounds/channel{n}.wav"),
+            path.as_ref(),
+            Some(path.as_ref().file_name().unwrap().to_str().unwrap()),
+            state,
+        )
+        .unwrap(),
+    );
+    let sample2 = Arc::new(
+        sample::Sample::load_from_file(
+            // format!("res/sounds/channel{n}.wav"),
+            path.as_ref(),
+            Some(path.as_ref().file_name().unwrap().to_str().unwrap()),
+            state,
+        )
+        .unwrap(),
+    );
+
+    let track = Arc::new(RwLock::new(Track::new(
+        // format!("Track c{n}"),
+        path.as_ref().file_name().unwrap().to_str().unwrap(),
+        vec![sample, sample2],
+        // Speakers::from(n as u16 - 1),
+        to,
         state.clone(),
     )));
 
@@ -99,6 +145,11 @@ fn main() {
 
             // Load test sample
             let tracks: Vec<_> = (1..=2).map(|cn| load_channel(cn, &state)).collect();
+            
+            // let tracks = vec![
+            //     load_channel_path("res/sounds/sine.wav", Speakers::FrontLeft, &state),
+            //     load_channel_path("res/sounds/sine_inverse.wav", Speakers::FrontRight, &state),
+            // ];
 
             let stream = start_audio(device, tracks.clone(), state.clone());
 

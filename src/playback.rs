@@ -10,7 +10,7 @@ use crate::{
     channel::{channel_router, channel_router_split_input},
     resampler::Resampler,
     state::State,
-    track::Track,
+    track::Track, id::Id,
 };
 
 const MAX_RESAMPLING_BUFFER: usize = 16192;
@@ -38,8 +38,8 @@ pub fn start_audio(
     let target_sample_rate = supported_config.sample_rate();
     let target_sample_count = supported_config.channels();
 
-    // indicies in the form of (current_index, absolute_index)
-    let mut output_indicies = vec![(0, 0); tracks.len()];
+    // indicies in the form of (sample_index, current_index, absolute_index)
+    let mut output_indicies = vec![(0, 0, 0); tracks.len()];
 
     let buffer_size = match supported_config.buffer_size() {
         cpal::SupportedBufferSize::Range { max, .. } => *max,
@@ -60,7 +60,7 @@ pub fn start_audio(
                         let params = rubato::InterpolationParameters {
                             sinc_len: 256,
                             f_cutoff: 0.95,
-                            interpolation: rubato::InterpolationType::Cubic,
+                            interpolation: rubato::InterpolationType::Nearest,
                             oversampling_factor: 256,
                             window: rubato::WindowFunction::Blackman,
                         };
@@ -97,22 +97,34 @@ pub fn start_audio(
     let thread_resamplers = resamplers.clone();
 
     // spawn one thread per track for resampling
-    for (resampler, mut output_buffer) in thread_resamplers {
+    for (track_index, (resamplers, mut output_buffer)) in thread_resamplers.into_iter().enumerate()
+    {
         std::thread::spawn(move || 'outer: loop {
-            for (resampler, complete) in resampler.iter() {
+            for (sample_index, (resampler, complete)) in resamplers.iter().enumerate() {
                 if complete.load(Ordering::SeqCst) {
                     continue;
                 }
 
                 if resampler.resample(&mut output_buffer) {
                     info!(
-                        "{} - complete - {}",
+                        "Channel: `{}` Sample: `{}` resampled... - len: {}, {} samples",
+                        track_index,
                         resampler.sample().name,
-                        resampler.buffer().read().unwrap()[0].len()
+                        resampler.buffer().read().unwrap()[0].len(),
+                        resamplers.len()
                     );
+
+                    // This sample has been fully resampled
                     complete.store(true, Ordering::SeqCst);
 
-                    break 'outer;
+                    if sample_index == resamplers.len() - 1 {
+                        info!(
+                            "Channel: `{}` Sample: `{}` fully resampled",
+                            track_index,
+                            resampler.sample().name
+                        );
+                        break 'outer;
+                    }
                 }
 
                 break;
@@ -138,6 +150,7 @@ pub fn start_audio(
                 track,
                 &mut indicies.0,
                 &mut indicies.1,
+                &mut indicies.2,
                 target_sample_count,
                 target_sample_rate.0 as u64,
                 sample_data,
@@ -174,6 +187,7 @@ pub fn start_audio(
 
 fn write_track(
     track: &Arc<RwLock<Track>>,
+    current_sample_index: &mut usize,
     current_index: &mut usize,
     absolute_index: &mut usize,
     target_sample_count: u16,
@@ -187,20 +201,27 @@ fn write_track(
         return;
     };
 
+    if sample_index > *current_sample_index {
+        *current_index = 0;
+        *current_sample_index += 1;
+    }
+
+
     let data = sample.data.as_thirty_two_float().unwrap();
 
     let adjusted_len = sample_data.len() / target_sample_count as usize;
 
     if let Some(Some((resampler, _))) = resampler.iter_all().nth(sample_index) {
         let buffer = resampler.buffer().read().unwrap();
+        // println!("Writing {} - {} {}", sample.name, current_index, buffer[0].len());
         channel_router_split_input(
             sample.header.channel_count,
             target_sample_count,
             &buffer,
             sample_data,
             *current_index,
-            // &track.channel_mapping,
-            &None,
+            &track.channel_mapping,
+            // &None,
         );
     } else {
         channel_router(

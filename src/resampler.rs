@@ -123,6 +123,10 @@ impl Resampler {
     pub fn iter(&self) -> impl Iterator<Item = &(ResamplerInner, AtomicBool)> + '_ {
         self.0.iter().filter_map(|v| v.as_ref())
     }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 impl From<Vec<Option<(Arc<Sample>, SincFixedOut<f32>, Vec<Vec<f32>>, usize)>>> for Resampler {
