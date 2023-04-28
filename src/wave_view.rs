@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::RenderState;
 use wgpu::util::DeviceExt;
 
+/// These are the verticies used for TRIANGLE_STRIP display to the screen
 const VERTICIES: [f32; 8] = [
     1.0, 0.0, // top right
     0.0, 0.0, // top left
@@ -9,6 +10,14 @@ const VERTICIES: [f32; 8] = [
     0.0, 1.0, // bottom left
 ];
 
+/// The structure that represents a wave view uniform sent to the drawing frag shader
+/// 
+/// `width` and `height` are the dimensions of the view in pixels
+/// `yscale` is the scale of the amplitude of the wave
+/// `start` and `end` are the range (in samples) to index into the audio buffer
+/// `main_color` is the color of the waves
+/// `second_color` is the color of rms
+/// `bg_color` is the background color
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct WaveUniform {
@@ -26,6 +35,8 @@ pub struct WaveUniform {
     pub bg_color: [f32; 4],
 }
 
+/// This represents the uniform for the min/max/rms compute shader
+/// Fields are similar to those in `WaveUniform`
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct WaveComputeUniform {
@@ -38,6 +49,8 @@ pub struct WaveComputeUniform {
 
     pub _padding: [u32; 3],
 }
+
+/// This is the state which contains common things for rendering
 pub struct WaveViewState {
     pub draw_pipeline: wgpu::RenderPipeline,
     pub compute_pipeline: wgpu::ComputePipeline,

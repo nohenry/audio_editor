@@ -2,7 +2,6 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     fs::File,
     io,
-    num::NonZeroU64,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::Duration,
@@ -11,7 +10,7 @@ use std::{
 use bytemuck::Zeroable;
 use eframe::egui_wgpu;
 use egui::Pos2;
-use tracing::{info, warn};
+use tracing::info;
 use wgpu::util::DeviceExt;
 
 use crate::{
@@ -31,7 +30,7 @@ pub struct WaveViewSampleState {
     _audio_buffer: wgpu::Buffer,
     audio_bind_group: wgpu::BindGroup,
 
-    compute_output_buffer: wgpu::Buffer,
+    _compute_output_buffer: wgpu::Buffer,
     compute_output_bind_group: wgpu::BindGroup,
 
     wave_state: Arc<WaveViewState>,
@@ -203,7 +202,7 @@ impl Sample {
                 _audio_buffer: audio_buffer,
                 audio_bind_group,
 
-                compute_output_buffer,
+                _compute_output_buffer: compute_output_buffer,
                 compute_output_bind_group,
 
                 wave_state: app_state.wave_view_state.clone(),
@@ -292,12 +291,8 @@ impl Sample {
         let height = rect.height();
         let sample_data = self.data.as_thirty_two_float().unwrap();
 
-        // Samples
-        // let sample_data_len = track.view_range.end - sample_offset;
-
         // Y-scale factor
         let scale = height / 2.0 - 10.0;
-        // println!("{}", scale);
 
         let main_color = egui::Color32::from_rgb(181, 20, 9);
 
@@ -305,13 +300,13 @@ impl Sample {
         let bg_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 0);
 
         let actual_len = sample_data.len();
-        // let adjusted_len = sample_data_len.min(actual_len);
 
         let Some(range) = track.get_clip_sample_width(index) else {
             return actual_len;
         };
 
         let samples_per_pixel = range.len() as f32 / width;
+
         // Paint circles for individual samples if zoomed in enough
         if samples_per_pixel <= sample_point_threshold {
             ui.painter().line_segment(
@@ -341,35 +336,9 @@ impl Sample {
                     main_color,
                 )
             }
-        // } else if samples_per_pixel <= sample_threshold {
-        //     //Paint lines conenct each sample
-        //     ui.painter().line_segment(
-        //         [
-        //             Pos2::new(rect.left(), rect.center().y + 0.5),
-        //             Pos2::new(rect.right(), rect.center().y + 0.5),
-        //         ],
-        //         egui::Stroke::new(1.0, egui::Color32::BLACK),
-        //     );
-        //     let mut last = 0.0;
-        //     for (i, sample) in sample_data[range.min as usize..range.max as usize]
-        //         .iter()
-        //         .enumerate()
-        //     {
-        //         let x = i as f32 / samples_per_pixel;
-        //         ui.painter().line_segment(
-        //             [
-        //                 Pos2::new(x + rect.left(), rect.center().y - last * scale),
-        //                 Pos2::new(x + rect.left(), rect.center().y - *sample * scale),
-        //             ],
-        //             egui::Stroke::new(1.0, main_color),
-        //         );
-
-        //         last = *sample;
-        //     }
         } else {
             let wave_state = self.wgpu_state.clone();
             let id = self.id;
-            // let start = track.view_range.start as u32;
 
             // Render a shader to display larger zommed-out data
             let cb = egui_wgpu::CallbackFn::new()

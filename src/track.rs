@@ -328,65 +328,6 @@ impl Track {
                         }
                     };
                     let redraw = redraw.is_none() || self.frame_count == 0;
-
-                    // } else {
-                    //     let data: Vec<_> = sample_data[..sample_data_len as usize]
-                    //         .chunks(samples_per_pixel as usize)
-                    //         .map(|sample| {
-                    //             let (min, max) =
-                    //                 sample.iter().fold((f32::MAX, f32::MIN), |(min, max), l| {
-                    //                     (min.min(*l), max.max(*l))
-                    //                 });
-
-                    //             let sum_sqrd = sample.iter().map(|f| *f * *f).sum::<f32>();
-                    //             let rms = (sum_sqrd / sample.len() as f32).sqrt();
-
-                    //             (min, max, rms)
-                    //         })
-                    //         .collect();
-
-                    //     for (i, avg) in data.into_iter().enumerate() {
-                    //         // Max value
-                    //         ui.painter().line_segment(
-                    //             [
-                    //                 Pos2::new(i as f32 + rect.left() + 0.5, rect.center().y),
-                    //                 Pos2::new(
-                    //                     i as f32 + rect.left() + 0.5,
-                    //                     rect.center().y - avg.1 * scale,
-                    //                 ),
-                    //             ],
-                    //             egui::Stroke::new(1.0, main_color),
-                    //         );
-
-                    //         // Min value
-                    //         ui.painter().line_segment(
-                    //             [
-                    //                 Pos2::new(i as f32 + rect.left() + 0.5, rect.center().y),
-                    //                 Pos2::new(
-                    //                     i as f32 + rect.left() + 0.5,
-                    //                     rect.center().y + avg.0.abs() * scale,
-                    //                 ),
-                    //             ],
-                    //             egui::Stroke::new(1.0, main_color),
-                    //         );
-
-                    //         // RMS
-                    //         ui.painter().line_segment(
-                    //             [
-                    //                 Pos2::new(
-                    //                     i as f32 + rect.left() + 0.5,
-                    //                     rect.center().y + avg.2.abs() / 2.0 * scale,
-                    //                 ),
-                    //                 Pos2::new(
-                    //                     i as f32 + rect.left() + 0.5,
-                    //                     rect.center().y - avg.2.abs() / 2.0 * scale,
-                    //                 ),
-                    //             ],
-                    //             egui::Stroke::new(1.0, second_color),
-                    //         );
-                    //     }
-                    // }
-
                     let width = rect.width();
 
                     ui.allocate_ui_at_rect(rect, |ui| {
@@ -429,7 +370,7 @@ impl Track {
                                 );
 
                                 egui::Frame::none()
-                                    .fill(egui::Color32::from_black_alpha(50))
+                                    .fill(egui::Color32::from_rgba_unmultiplied(0, 92, 23, 50))
                                     .outer_margin(egui::Margin {
                                         bottom: 5.0,
                                         left: 0.0,

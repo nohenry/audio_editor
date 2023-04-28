@@ -1,6 +1,8 @@
 use std::ops::{Index, IndexMut};
 
 bitflags::bitflags! {
+    /// Represents physical speakers. An input can be mapped to multiple speakers
+    /// so this is why they're represented as a bitfield
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Speakers: u16  {
         const FrontLeft    = 0b1;
@@ -19,8 +21,10 @@ bitflags::bitflags! {
 }
 
 impl Speakers {
+    /// The number of speakers there are
     pub const MAX_COUNT: usize = 11;
 
+    /// Returns the bitfield as an index from 1-MAX_COUNT
     pub fn as_u16(&self) -> u16 {
         let zeros = self.bits().trailing_zeros() as u16;
         if zeros >= Speakers::MAX_COUNT as u16 {
@@ -30,6 +34,7 @@ impl Speakers {
         }
     }
 
+    /// Returns a bitfield with all the speakers set until the `channel` parameter
     pub const fn all_to(channel: u16) -> Speakers {
         Speakers::from_bits_truncate(u16::MAX >> (16 - channel))
     }
@@ -55,10 +60,14 @@ impl From<u16> for Speakers {
     }
 }
 
+/// Maps input channels to speakers.
+/// You can map up to `Speakers::MAX_COUNT` input channels
+///
 #[derive(Debug, Clone, Copy)]
 pub struct ChannelMapping([Option<Speakers>; Speakers::MAX_COUNT]);
 
 impl ChannelMapping {
+    /// Returns a channel mapping with everything mapped 1:1
     pub fn identity(channels: u16) -> ChannelMapping {
         let sps: Vec<_> = (0..Speakers::MAX_COUNT as u16)
             .map(|f| {
@@ -73,6 +82,11 @@ impl ChannelMapping {
         ChannelMapping(sps.try_into().unwrap())
     }
 
+    /// Construct the default smart mapping of speakers depending on the input and output channel count
+    ///
+    /// If there is 1 input channel, this channel will be mapped to all speakers in the output channel range
+    /// If there is the same amount of input and output channels, or more input channels, 1:1 mapping is used
+    /// Otherwise the front left and right channels are mapped to every pair of speakers (except center and sub) if they don't exist.
     pub fn default(input_channels: u16, output_channels: u16) -> ChannelMapping {
         if input_channels == 1 {
             // Map all outputs to first channel
@@ -95,6 +109,7 @@ impl ChannelMapping {
         }
     }
 
+    /// No inputs are mapped to any speakers
     pub fn empty() -> ChannelMapping {
         ChannelMapping([None; Speakers::MAX_COUNT])
     }
@@ -143,18 +158,26 @@ impl IndexMut<usize> for ChannelMapping {
 }
 
 impl ChannelMapping {
+    /// Easily construct a channel mapping from an array
+    ///
+    /// # Arguments
+    /// * `mapping` - An array that contains a tuple with the first element being the input channel and the second being the output channel(s)
+    /// * `input_channel_count` - The number of input channels
+    /// * `keep_default` - if `true`, channels not specified in array will be defaults (see `ChannelMapping::default`), otherwise use empty mappings
+    ///
+    /// # Examples
     pub fn from_array_mapping<const N: usize>(
-        value: [(Speakers, Speakers); N],
-        channel_count: u16,
+        mapping: [(Speakers, Speakers); N],
+        input_channel_count: u16,
         keep_default: bool,
     ) -> Self {
         let mut default = if keep_default {
-            ChannelMapping::default(channel_count, channel_count)
+            ChannelMapping::default(input_channel_count, input_channel_count)
         } else {
             ChannelMapping::empty()
         };
 
-        for (i, o) in value.iter() {
+        for (i, o) in mapping.iter() {
             default[i] = Some(*o);
         }
 
@@ -194,6 +217,18 @@ pub fn channel_router(
     }
 }
 
+
+/// Route an input signal to an output signal using a channel mapping
+/// 
+/// # Arguments
+/// 
+/// * `input_channels` - the number of channels the input signal contains
+/// * `output_channels` - the number of channels the output signal contains
+/// * `input` - the input signal. the indicies of the first array are channels 
+/// * `output` - the output to write into. this will act as a packed audio signal
+/// * `input_offset` - the offset of the input signal to read from
+/// * `channel_mapping` - the mapping to consult when writing the signals
+/// 
 pub fn channel_router_split_input(
     input_channels: u16,
     output_channels: u16,

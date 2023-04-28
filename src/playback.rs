@@ -10,7 +10,7 @@ use crate::{
     channel::{channel_router, channel_router_split_input},
     resampler::Resampler,
     state::State,
-    track::Track, id::Id,
+    track::Track,
 };
 
 const MAX_RESAMPLING_BUFFER: usize = 16192;
