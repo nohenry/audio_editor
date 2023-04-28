@@ -10,10 +10,7 @@ struct VertexOutput {
 
 struct Uniform {
     resolution: vec2<f32>,
-    // samples_per_pixel: f32,
     scale: f32,
-    data_len: u32,
-    increment: u32,
     start: u32,
     end: u32,
 
@@ -42,10 +39,11 @@ fn DistanceToLineSegment(p0: vec2<f32>, p1: vec2<f32>, p: vec2<f32>) -> f32
 
 fn Function(x: f32) -> f32
 {
-    let f = map(x, 0.0, 1.0, f32(config.start), f32(config.end));
+    let f = map(x, 0.0, config.resolution.x / config.resolution.y, f32(config.start), f32(config.end));
     let fl = u32(floor(f));
     let fr = fract(f);
     return (mix(audio_buf[fl], audio_buf[fl + 1u], fr) * config.scale / config.resolution.y + 0.5) ;
+    // return (sin(20.0 * x) + 1.0) / 2.0;
 }
 
 fn DistanceToFunction(p: vec2<f32>, xDelta: f32,) -> f32
@@ -65,11 +63,20 @@ fn DistanceToFunction(p: vec2<f32>, xDelta: f32,) -> f32
     return result;
 }
 
+struct OutPoint {
+    min: f32,
+    max: f32,
+    rms: f32,
+}
+
 @group(0) @binding(0)
 var<storage, read> audio_buf: array<f32>;
 
 @group(1) @binding(0)
 var<uniform> config: Uniform;
+
+@group(2) @binding(0)
+var<storage, read_write> points: array<OutPoint>;
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
@@ -117,65 +124,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     //     }
     // } else {
         
-    
-        
     // Calculate max, min and rms values
-    var max = -100000.0;
-    var min = 100000.0;
-    var sq_sum = 0.0;
-
-    let skip = 5u;
     let samples_per_pixel = f32((config.end - config.start)) / config.resolution.x;
     let pixels_per_sample = 1.0 / samples_per_pixel;
     let offset = u32(round(f32(pixel) * samples_per_pixel));
 
     if samples_per_pixel < sample_threshold {
-
-        let distanceToPlot = DistanceToFunction(in.uv, (config.resolution.y / config.resolution.x) / config.resolution.x);
+        let uv = (in.uv * config.resolution) / config.resolution.y;
+        let distanceToPlot = DistanceToFunction(uv, 1.0 / config.resolution.x * 8.0);
         var intensity = smoothstep(0., 1., 1. - distanceToPlot * config.resolution.y);
         intensity = pow(intensity,1./2.2);
-
-        // if distanceToPlot < 0.01 {
-        //     return vec4<f32>(config.main_color.xyz, intensity);
-        // }
 
         if y == i32(config.resolution.y / 2.0) {
             return mix(vec4<f32>(0.0, 0.0, 0.0, 1.0), config.main_color, intensity);
         }
         return mix(config.bg_color, config.main_color, intensity);
+        // return vec4<f32>(1.0, 0.0, 0.0, intensity);
     } else {
-        var count = 0u;
-        for (var p = 0u; p < u32(samples_per_pixel); p += config.increment) {
-            let value = audio_buf[config.start + offset + p];
-            if value > max {
-                max = value;
-            } else if value < min {
-                min = value;
-            }
-
-            sq_sum += value * value;
-            count += 1u;
-        }
-
-        let rms = sqrt(sq_sum / f32(count) / 2.0);
-
-        if max <= -90000.0 {
-            max = 0.0;
-        }
-        if min >= 90000.0 {
-            min = 0.0;
-        }
+        var point = points[pixel];
 
         // Convert into coordinate space
-        let max_coord = i32(max * config.scale) + i32(config.resolution.y / 2.0);
-        let min_coord = i32(min * config.scale) + i32(config.resolution.y / 2.0);
+        let max_coord = i32(point.max * config.scale) + i32(config.resolution.y / 2.0);
+        let min_coord = i32(point.min * config.scale) + i32(config.resolution.y / 2.0);
 
-        let max_rms = i32(rms * config.scale) + i32(config.resolution.y / 2.0);
-        let min_rms = i32(rms * -config.scale) + i32(config.resolution.y / 2.0);
+        // let max_rms = i32(rms * config.scale) + i32(config.resolution.y / 2.0);
+        // let min_rms = i32(rms * -config.scale) + i32(config.resolution.y / 2.0);
 
-        if y < max_rms && y > min_rms {
-            return config.second_color;
-        } else if y <= max_coord && y >= min_coord {
+        // if y < max_rms && y > min_rms {
+        //     return config.second_color;
+        // } else 
+        if y <= max_coord && y >= min_coord {
             return config.main_color;
         }
     }

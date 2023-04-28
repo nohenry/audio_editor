@@ -1,3 +1,6 @@
+#![feature(try_blocks)]
+#![feature(type_ascription)]
+
 use std::{
     collections::HashMap,
     path::Path,
@@ -80,7 +83,7 @@ fn load_channel_path(
     let track = Arc::new(RwLock::new(Track::new(
         // format!("Track c{n}"),
         path.as_ref().file_name().unwrap().to_str().unwrap(),
-        vec![sample, sample2],
+        vec![sample],
         // Speakers::from(n as u16 - 1),
         to,
         state.clone(),
@@ -104,7 +107,8 @@ fn main() {
     let device = host
         .output_devices()
         .expect("unable to iterate output devices")
-        .find(|device| device.name().unwrap() == "Speakers (Realtek(R) Audio)")
+        .find(|_| false)
+        // .find(|device| device.name().unwrap() == "Speakers (Realtek(R) Audio)")
         // .find(|device| device.name().unwrap() == "Speakers (Focusrite USB Audio)")
         .or_else(|| host.default_output_device())
         .expect("Unable to find any output devices!");
@@ -144,12 +148,12 @@ fn main() {
             }));
 
             // Load test sample
-            let tracks: Vec<_> = (1..=2).map(|cn| load_channel(cn, &state)).collect();
+            // let tracks: Vec<_> = (1..=2).map(|cn| load_channel(cn, &state)).collect();
             
-            // let tracks = vec![
-            //     load_channel_path("res/sounds/sine.wav", Speakers::FrontLeft, &state),
-            //     load_channel_path("res/sounds/sine_inverse.wav", Speakers::FrontRight, &state),
-            // ];
+            let tracks = vec![
+                load_channel_path("sample_short.wav", Speakers::FrontLeft, &state),
+                // load_channel_path("res/sounds/sine_inverse.wav", Speakers::FrontRight, &state),
+            ];
 
             let stream = start_audio(device, tracks.clone(), state.clone());
 

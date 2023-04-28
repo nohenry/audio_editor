@@ -20,8 +20,9 @@ pub struct Track {
 
     pub channel_mapping: Option<ChannelMapping>,
 
+    frame_count: usize,
     cached_times: Vec<u64>,
-    app_state: Arc<RwLock<State>>,
+    pub app_state: Arc<RwLock<State>>,
 }
 
 const TRACK_HEIGHT: f32 = 200.0;
@@ -54,6 +55,7 @@ impl Track {
                 1,
                 false,
             )),
+            frame_count: 0,
             // channel_mapping: ChannelMapping::default(1),
             cached_times: sample_times,
             view_range: Duration::from_secs(0).as_micros() as u64
@@ -257,6 +259,7 @@ impl Track {
         }
     }
 
+    /// The main drawing code for the track
     pub fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let frame = egui::containers::Frame {
             shadow: eframe::epaint::Shadow {
@@ -268,7 +271,7 @@ impl Track {
         };
 
         frame.begin(ui);
-        frame
+        let res = frame
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     egui::containers::Frame::none()
@@ -299,27 +302,32 @@ impl Track {
                         .ctx()
                         .input(|input| (input.scroll_delta, input.pointer.hover_pos()));
 
-                    if let Some(bg_pos) = bg_pos {
-                        if rect.contains(bg_pos) {
-                            let dist = (bg_pos.x - rect.min.x) / rect.width();
+                    let redraw: Option<()> = try {
+                        if let Some(bg_pos) = bg_pos {
+                            if rect.contains(bg_pos) {
+                                let dist = (bg_pos.x - rect.min.x) / rect.width();
 
-                            // Scroll faster when zoomed out more. This makes zoom feel more consistent
-                            let delta = scoll_delta.y
-                                * (self.view_range.end - self.view_range.start) as f32
-                                / 5000.0;
+                                // Scroll faster when zoomed out more. This makes zoom feel more consistent
+                                let delta = scoll_delta.y
+                                    * (self.view_range.end - self.view_range.start) as f32
+                                    / 500.0;
 
-                            if delta.abs() > 0.0 {
-                                self.view_range.start =
-                                    (self.view_range.start as f32 + delta * dist)
+                                if delta.abs() > 0.0 {
+                                    self.view_range.start = (self.view_range.start as f32
+                                        + delta * dist)
                                         .round()
-                                        .max(0.0) as u64;
-
-                                self.view_range.end =
-                                    (self.view_range.end as f32 - delta * (1.0 - dist)).round()
+                                        .max(0.0)
                                         as u64;
+
+                                    self.view_range.end =
+                                        (self.view_range.end as f32 - delta * (1.0 - dist)).round()
+                                            as u64;
+                                    None?
+                                }
                             }
                         }
-                    }
+                    };
+                    let redraw = redraw.is_none() || self.frame_count == 0;
 
                     // } else {
                     //     let data: Vec<_> = sample_data[..sample_data_len as usize]
@@ -420,7 +428,6 @@ impl Track {
                                     },
                                 );
 
-                                
                                 egui::Frame::none()
                                     .fill(egui::Color32::from_black_alpha(50))
                                     .outer_margin(egui::Margin {
@@ -435,8 +442,6 @@ impl Track {
                                         se: 5.0,
                                         sw: 5.0,
                                     })
-                                    // .stroke(egui::Stroke::new(1.5, egui::Color32::from_gray(10)))
-                                    // .shadow(egui::epaint::Shadow::small_dark())
                                     .show(ui, |ui| {
                                         let mut new_rect = ui.max_rect();
 
@@ -444,6 +449,10 @@ impl Track {
                                             pixel_range.len().max(res.response.rect.width()),
                                         );
                                         ui.allocate_rect(new_rect, egui::Sense::drag());
+
+                                        if redraw {
+                                            sample.view_updated(ui, new_rect, self, index);
+                                        }
 
                                         sample.display(ui, new_rect, self, index);
                                         offset += sample.len();
@@ -494,7 +503,11 @@ impl Track {
                     });
                 })
             })
-            .response
+            .response;
+
+        self.frame_count += 1;
+
+        res
     }
 }
 

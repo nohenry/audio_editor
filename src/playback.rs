@@ -23,8 +23,8 @@ pub fn start_audio(
     let mut supported_configs_range = device
         .supported_output_configs()
         .expect("error while querying configs");
-    supported_configs_range.next();
-    supported_configs_range.next();
+    // supported_configs_range.next();
+    // supported_configs_range.next();
     let supported_config = supported_configs_range
         .next()
         .expect("no supported config?!")
